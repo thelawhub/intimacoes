@@ -3,7 +3,7 @@
 // @namespace    projudi-intimacao-unica
 // @version      2.2.1
 // @description  Remove a paginação, agrega todas as intimações e exporta CSV.
-// @updateURL    https://gitlab.com/-/snippets/4899368/raw/main/projudi-intimacao-page.user.js
+// @updateURL    https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw
 // @match        https://projudi.tjgo.jus.br/*
 // @run-at       document-idle
 // @grant        none
