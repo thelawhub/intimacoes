@@ -2,6 +2,7 @@
 // @name         Projudi – Intimações em Página Única
 // @namespace    projudi-intimacao-page.user.js
 // @version      2.3
+// @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega todas as intimações em uma única página, além de exportar em CSV.
 // @author       louencosv (GPT)
 // @license      CC BY-NC 4.0
