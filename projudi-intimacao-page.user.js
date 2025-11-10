@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Projudi – Intimações em Página Única
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.4
+// @version      2.5
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega todas as intimações em uma única página, além de exportar em CSV.
 // @author       louencosv (GPT)
@@ -63,7 +63,7 @@
       // cartão de fundo opcional para dar contraste
       const panel = d.createElement('div');
       Object.assign(panel.style, {
-        background: 'rgba(33, 33, 33, 0.85)',
+        background: 'rgba(72, 72, 72, 0.85)',
         borderRadius: '10px',
         padding: '12px',
         boxShadow: '0 6px 18px rgba(0,0,0,.25)'
@@ -104,7 +104,7 @@
   function styleBtn(btn) {
     Object.assign(btn.style, {
       padding: '10px 16px',
-      background: '#223d62',
+      background: '#3c68a5',
       color: '#fff',
       border: 'none',
       borderRadius: '6px',
@@ -117,11 +117,11 @@
       position: 'relative'
     });
     btn.addEventListener('mouseenter', () => {
-      btn.style.background = '#284671';
+      btn.style.background = '#487fbe';
       btn.style.transform = 'translateY(-2px)';
     });
     btn.addEventListener('mouseleave', () => {
-      btn.style.background = '#223d62';
+      btn.style.background = '#3c68a5';
       btn.style.transform = 'translateY(0)';
     });
   }
@@ -133,7 +133,7 @@
       position: 'fixed',
       bottom: '110px',
       right: '28px',
-      background: '#223d62',
+      background: '#3c68a5',
       padding: '10px 18px',
       color: '#fff',
       borderRadius: '6px',
