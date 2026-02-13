@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name         Projudi – Intimações em Página Única
+// @name         Intimações em Página Única
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.5
+// @version      2.6
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
-// @description  Remove a paginação e agrega todas as intimações em uma única página, além de exportar em CSV.
+// @description  Remove a paginação e agrega intimações em uma única página, com exportação CSV/PDF.
 // @author       louencosv (GPT)
 // @license      CC BY-NC 4.0
 // @updateURL    https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
 // @downloadURL  https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
-// @match        https://projudi.tjgo.jus.br/*
+// @match        *://projudi.tjgo.jus.br/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -18,10 +18,20 @@
 
   const IFRAME_ID = 'Principal';
   const IFRAME_NAME = 'userMainFrame';
-  const BTN_LIST_ID = 'pj-unificar-intimacoes-btn';
-  const BTN_LIST_10_ID = 'pj-unificar-10-btn';
-  const BTN_CSV_ID  = 'pj-exportar-csv-btn';
+
   const BTN_CONTAINER_ID = 'pj-btn-container';
+  const BTN_ALL_ID = 'pj-unificar-todas-btn';
+  const BTN_10_ID = 'pj-unificar-10-btn';
+  const BTN_CUSTOM_ID = 'pj-unificar-custom-btn';
+  const BTN_CSV_ID = 'pj-exportar-csv-btn';
+  const BTN_PDF_ID = 'pj-exportar-pdf-btn';
+
+  const UI = {
+    width: 140,
+    height: 30,
+    gap: 6,
+    fontSize: 12
+  };
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
   else init();
@@ -31,132 +41,164 @@
     if (!ifr) return;
     const onLoad = () => inject(ifr);
     ifr.addEventListener('load', onLoad);
+    window.addEventListener('resize', () => positionPanel(ifr));
     inject(ifr);
   }
 
   function inject(ifr) {
     const d = ifr.contentDocument;
     if (!d || !d.body) return;
-    const title = d.querySelector('h1,h2,.Titulo,.titulo');
-    if (!title || !/intima(ç|c)ões\s+lidas/i.test(title.textContent || '')) return;
 
-    // Remove versões antigas (evita duplicar)
-    d.getElementById(BTN_LIST_ID)?.remove();
-    d.getElementById(BTN_LIST_10_ID)?.remove();
-    d.getElementById(BTN_CSV_ID)?.remove();
+    const titleEl = d.querySelector('h1,h2,.Titulo,.titulo');
+    const titleText = (titleEl?.textContent || '').trim();
+    const url = ifr.contentWindow?.location?.href || '';
+    const isIntimacaoPage =
+      /intima(ç|c)(a|ã)o|intima(ç|c)ões/i.test(titleText) ||
+      /intimac/i.test(url);
 
-    // Container fixo no canto: os botões ficam RELATIVOS a ele (sem position fixed nos botões)
-    let container = d.getElementById(BTN_CONTAINER_ID);
-    if (!container) {
-      container = d.createElement('div');
-      container.id = BTN_CONTAINER_ID;
-      Object.assign(container.style, {
-        position: 'fixed',
-        bottom: '24px',
-        right: '24px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-end',
-        gap: '10px',
-        zIndex: '2147483647'
-      });
-      // cartão de fundo opcional para dar contraste
-      const panel = d.createElement('div');
-      Object.assign(panel.style, {
-        background: 'rgba(72, 72, 72, 0.85)',
-        borderRadius: '10px',
-        padding: '12px',
-        boxShadow: '0 6px 18px rgba(0,0,0,.25)'
-      });
-      container.appendChild(panel);
-      d.body.appendChild(container);
-
-      // Função util p/ anexar botões dentro do painel
-      container._panel = panel;
+    if (!isIntimacaoPage) {
+      document.getElementById(BTN_CONTAINER_ID)?.remove();
+      return;
     }
 
-    // Botão: Listar todas
-    const btnList = d.createElement('button');
-    btnList.id = BTN_LIST_ID;
-    btnList.textContent = '📜 Listar todas as intimações';
-    styleBtn(btnList);
-    btnList.addEventListener('click', () => unifyInsideIframe(ifr, btnList));
-    container._panel.appendChild(btnList);
+    document.getElementById(BTN_CONTAINER_ID)?.remove();
 
-    // Botão: Carregar 10 páginas
-    const btn10 = d.createElement('button');
-    btn10.id = BTN_LIST_10_ID;
-    btn10.textContent = '⚡ Carregar 10 páginas';
-    styleBtn(btn10);
+    const container = document.createElement('div');
+    container.id = BTN_CONTAINER_ID;
+    Object.assign(container.style, {
+      position: 'fixed',
+      bottom: '12px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: `${UI.gap}px`,
+      zIndex: '2147483647',
+      width: `${UI.width}px`
+    });
+
+    const btnAll = createButton(document, BTN_ALL_ID, 'Carregar tudo');
+    btnAll.addEventListener('click', () => unifyInsideIframe(ifr, btnAll));
+
+    const btn10 = createButton(document, BTN_10_ID, 'Carregar 10');
     btn10.addEventListener('click', () => unifyInsideIframe(ifr, btn10, 10));
-    container._panel.appendChild(btn10);
 
-    // Botão: Exportar CSV
-    const btnCsv = d.createElement('button');
-    btnCsv.id = BTN_CSV_ID;
-    btnCsv.textContent = '💾 Exportar CSV';
-    styleBtn(btnCsv);
+    const btnCustom = createButton(document, BTN_CUSTOM_ID, 'Carregar N');
+    btnCustom.addEventListener('click', () => {
+      const raw = prompt('Quantas páginas deseja carregar?', '20');
+      if (raw === null) return;
+      const n = parseInt(String(raw).trim(), 10);
+      if (!Number.isFinite(n) || n < 1) {
+        alert('Informe um número inteiro maior que 0.');
+        return;
+      }
+      unifyInsideIframe(ifr, btnCustom, n);
+    });
+
+    const btnCsv = createButton(document, BTN_CSV_ID, 'Exportar CSV');
     btnCsv.addEventListener('click', () => exportCSV(ifr));
-    container._panel.appendChild(btnCsv);
+
+    const btnPdf = createButton(document, BTN_PDF_ID, 'Exportar PDF');
+    btnPdf.addEventListener('click', () => exportPDF(ifr));
+
+    container.append(btnAll, btn10, btnCustom, btnCsv, btnPdf);
+    document.body.appendChild(container);
+    positionPanel(ifr);
   }
 
-  // Somente visual dos botões (sem position fixed)
-  function styleBtn(btn) {
+  function positionPanel(ifr) {
+    const panel = document.getElementById(BTN_CONTAINER_ID);
+    if (!panel || !ifr) return;
+
+    const rect = ifr.getBoundingClientRect();
+    const margin = 12;
+    const panelWidth = UI.width;
+    const spaceRight = window.innerWidth - rect.right;
+    const spaceLeft = rect.left;
+
+    panel.style.left = '';
+    panel.style.right = '';
+
+    if (spaceRight >= panelWidth + margin) {
+      panel.style.right = `${Math.max(margin, spaceRight - 2)}px`;
+    } else if (spaceLeft >= panelWidth + margin) {
+      panel.style.left = `${Math.max(margin, rect.left - panelWidth - margin)}px`;
+    } else {
+      panel.style.right = `${margin}px`;
+    }
+  }
+
+  function createButton(d, id, label) {
+    const btn = d.createElement('button');
+    btn.id = id;
+    btn.textContent = label;
     Object.assign(btn.style, {
-      padding: '10px 16px',
-      background: '#3c68a5',
+      width: `${UI.width}px`,
+      height: `${UI.height}px`,
+      padding: '0 8px',
+      background: '#1f5fa8',
       color: '#fff',
       border: 'none',
-      borderRadius: '6px',
-      fontWeight: '600',
+      outline: 'none',
+      borderRadius: '7px',
+      fontWeight: '700',
       cursor: 'pointer',
-      fontSize: '14px',
-      whiteSpace: 'nowrap',
-      transition: 'background .2s, transform .2s',
-      boxShadow: '0 3px 10px rgba(0,0,0,.20)',
-      position: 'relative'
+      fontSize: `${UI.fontSize}px`,
+      textAlign: 'center',
+      boxShadow: '0 2px 7px rgba(0,0,0,.15)',
+      transition: 'transform .12s ease, background .12s ease, box-shadow .12s ease',
+      whiteSpace: 'nowrap'
     });
+
     btn.addEventListener('mouseenter', () => {
-      btn.style.background = '#487fbe';
-      btn.style.transform = 'translateY(-2px)';
+      btn.style.background = '#2d73c4';
+      btn.style.transform = 'translateY(-1px)';
     });
+
     btn.addEventListener('mouseleave', () => {
-      btn.style.background = '#3c68a5';
+      btn.style.background = '#1f5fa8';
       btn.style.transform = 'translateY(0)';
     });
+
+    btn.addEventListener('focus', () => {
+      btn.style.boxShadow = '0 0 0 2px rgba(45,115,196,.45), 0 2px 7px rgba(0,0,0,.15)';
+    });
+
+    btn.addEventListener('blur', () => {
+      btn.style.boxShadow = '0 2px 7px rgba(0,0,0,.15)';
+    });
+
+    return btn;
   }
 
-  // Toast simples para feedback não intrusivo
-  function toast(d, msg) {
-    const t = d.createElement('div');
+  function showToast(msg) {
+    const t = document.createElement('div');
     Object.assign(t.style, {
       position: 'fixed',
-      bottom: '110px',
-      right: '28px',
-      background: '#3c68a5',
-      padding: '10px 18px',
+      bottom: '180px',
+      right: '12px',
+      background: '#1f5fa8',
+      padding: '8px 12px',
       color: '#fff',
       borderRadius: '6px',
       boxShadow: '0 3px 10px rgba(0,0,0,.25)',
       zIndex: '2147483647',
       fontWeight: '600',
+      fontSize: '12px',
       opacity: '0',
-      transition: 'opacity .4s'
+      transition: 'opacity .25s'
     });
     t.textContent = msg;
-    d.body.appendChild(t);
-    requestAnimationFrame(() => t.style.opacity = '1');
+    document.body.appendChild(t);
+    requestAnimationFrame(() => (t.style.opacity = '1'));
     setTimeout(() => {
       t.style.opacity = '0';
-      setTimeout(() => t.remove(), 700);
-    }, 2500);
+      setTimeout(() => t.remove(), 300);
+    }, 1800);
   }
 
-  // =============== UNIFICAÇÃO (original preservada) ===============
   async function unifyInsideIframe(mainFrame, btn, maxPages = null) {
     const d = mainFrame.contentDocument;
     const originalLabel = btn.textContent;
-    const setMsg = (m) => btn.textContent = m;
+    const setMsg = (m) => (btn.textContent = m);
     btn.disabled = true;
 
     try {
@@ -181,8 +223,13 @@
       const total = pageInfo.totalPages;
       const toPage = maxPages ? Math.min(maxPages, total) : total;
 
+      if (toPage <= 1) {
+        setMsg('Nada p/ carregar');
+        return;
+      }
+
       for (let p = 2; p <= toPage; p++) {
-        setMsg(`⏳ Página ${p}/${toPage}...`);
+        setMsg(`${p}/${toPage}...`);
         await navigateLoaderToPage(loader, p, pageInfo);
         const doc = loader.contentDocument;
         const t2 = findMainTable(doc);
@@ -194,38 +241,39 @@
       const totalRows = tbody.querySelectorAll('tr').length;
       if (!maxPages || toPage === total) {
         pager?.remove?.();
-        setMsg(`✅ Listagem unificada (${totalRows} linhas)`);
+        setMsg(`Ok (${totalRows})`);
       } else {
-        setMsg(`✅ ${toPage} páginas carregadas (${totalRows} linhas)`);
+        setMsg(`Ok ${toPage}p`);
       }
     } catch (err) {
       console.error('[Projudi – Unificar Intimações] Erro:', err);
-      btn.textContent = '❌ Erro — veja o console';
+      btn.textContent = 'Erro';
     } finally {
-      setTimeout(() => { btn.disabled = false; btn.textContent = originalLabel; }, 2500);
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }, 1400);
     }
   }
 
-  // =============== EXPORT CSV (original + toast) ===============
   function exportCSV(ifr) {
     const d = ifr.contentDocument;
     const table = findMainTable(d);
-    if (!table) { alert('Tabela não encontrada para exportação.'); return; }
+    if (!table) {
+      alert('Tabela não encontrada para exportação.');
+      return;
+    }
 
     const delimiter = ';';
     const rows = [];
-    const pushRow = (cells) => { rows.push(cells.map(cleanCSV).join(delimiter)); };
+    const pushRow = (cells) => rows.push(cells.map(cleanCSV).join(delimiter));
 
     const ths = Array.from((table.tHead || table).querySelectorAll('th')).map(th => th.innerText.trim());
     if (ths.length) pushRow(ths);
 
     const trs = Array.from(table.querySelectorAll('tbody tr'));
     for (const tr of trs) {
-      const tds = Array.from(tr.querySelectorAll('td')).map(td => {
-        let txt = td.innerText || '';
-        txt = txt.replace(/\s+/g, ' ').trim();
-        return txt;
-      });
+      const tds = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
       if (tds.length) pushRow(tds);
     }
 
@@ -234,7 +282,7 @@
 
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
-    const fname = `intimacoes_${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.csv`;
+    const fname = `intimacoes_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.csv`;
 
     const a = d.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -244,8 +292,33 @@
     setTimeout(() => {
       URL.revokeObjectURL(a.href);
       a.remove();
-      toast(d, '✅ CSV gerado com sucesso');
-    }, 1000);
+      showToast('CSV gerado');
+    }, 700);
+  }
+
+  function exportPDF(ifr) {
+    const d = ifr.contentDocument;
+    const table = findMainTable(d);
+    if (!table) {
+      alert('Tabela não encontrada para exportação.');
+      return;
+    }
+
+    const printWin = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=800');
+    if (!printWin) {
+      alert('Bloqueador de pop-up ativo. Permita pop-up para gerar PDF.');
+      return;
+    }
+
+    const dateStr = new Date().toLocaleString('pt-BR');
+
+    printWin.document.open();
+    printWin.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimações</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimações</h1><div class="meta">Gerado em: ${dateStr}</div>${table.outerHTML}</body></html>`);
+    printWin.document.close();
+    printWin.focus();
+    setTimeout(() => printWin.print(), 250);
+
+    showToast('Impressão PDF aberta');
   }
 
   function cleanCSV(value) {
@@ -255,7 +328,6 @@
     return v;
   }
 
-  // ======== Funções auxiliares originais (inalteradas) ========
   function findMainTable(root) {
     const tables = Array.from(root.querySelectorAll('table'));
     let best = null, scoreBest = -1;
@@ -276,7 +348,7 @@
   function findPagerFallback(root) {
     const blocks = Array.from(root.querySelectorAll('div,nav,td,p,form,span'))
       .filter(el => /\bPágina\b/i.test(el.textContent || '') && el.querySelectorAll('a').length);
-    if (blocks.length) return blocks.sort((a,b) => b.querySelectorAll('a').length - a.querySelectorAll('a').length)[0];
+    if (blocks.length) return blocks.sort((a, b) => b.querySelectorAll('a').length - a.querySelectorAll('a').length)[0];
     return null;
   }
 
@@ -318,7 +390,8 @@
       const idx = humanPage - 1;
       const pageSize = info.pageSizeFromHref || 15;
       try { w.buscaDados(idx, pageSize); } catch {}
-      await ready; return;
+      await ready;
+      return;
     }
 
     if (info.hasGoButton && info.selectors.inputPath && info.selectors.irPath) {
@@ -331,16 +404,19 @@
         input.dispatchEvent(new Event('change', { bubbles: true }));
         if (typeof ir.click === 'function') ir.click();
         else ir.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        await ready; return;
+        await ready;
+        return;
       }
     }
 
     const a = Array.from(doc.querySelectorAll('#Paginacao a, .Paginacao a, a'))
       .find(x => parseInt((x.textContent || '').trim(), 10) === humanPage);
+
     if (a) {
       const ready = observeTableChange(doc);
       a.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await ready; return;
+      await ready;
+      return;
     }
 
     loader.src = w.location.href;
@@ -360,10 +436,16 @@
       const root = doc.body;
       const obs = new MutationObserver(() => {
         const now = doc.querySelectorAll('table tbody tr').length;
-        if (now !== startCount && now > 0) { obs.disconnect(); resolve(); }
+        if (now !== startCount && now > 0) {
+          obs.disconnect();
+          resolve();
+        }
       });
       obs.observe(root, { childList: true, subtree: true });
-      setTimeout(() => { obs.disconnect(); resolve(); }, 8000);
+      setTimeout(() => {
+        obs.disconnect();
+        resolve();
+      }, 8000);
     });
   }
 
@@ -384,8 +466,13 @@
     const segs = [];
     for (; el && el.nodeType === 1; el = el.parentElement) {
       let s = el.nodeName.toLowerCase();
-      if (el.id) { s += `#${CSS.escape(el.id)}`; segs.unshift(s); break; }
-      let i = 1, sib = el;
+      if (el.id) {
+        s += `#${CSS.escape(el.id)}`;
+        segs.unshift(s);
+        break;
+      }
+      let i = 1;
+      let sib = el;
       while ((sib = sib.previousElementSibling)) if (sib.nodeName === el.nodeName) i++;
       s += `:nth-of-type(${i})`;
       segs.unshift(s);
