@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações em Página Única
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.6
+// @version      2.7
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega intimações em uma única página, com exportação CSV/PDF.
 // @author       louencosv (GPT)
@@ -19,7 +19,10 @@
   const IFRAME_ID = 'Principal';
   const IFRAME_NAME = 'userMainFrame';
 
-  const BTN_CONTAINER_ID = 'pj-btn-container';
+  const ROOT_ID = 'pj-fab-root';
+  const MENU_ID = 'pj-fab-menu';
+  const FAB_ID = 'pj-fab-main';
+
   const BTN_ALL_ID = 'pj-unificar-todas-btn';
   const BTN_10_ID = 'pj-unificar-10-btn';
   const BTN_CUSTOM_ID = 'pj-unificar-custom-btn';
@@ -27,10 +30,11 @@
   const BTN_PDF_ID = 'pj-exportar-pdf-btn';
 
   const UI = {
-    width: 140,
-    height: 30,
+    menuWidth: 230,
+    btnHeight: 30,
     gap: 6,
-    fontSize: 12
+    brand: '#2b69aa',
+    brandHover: '#245a92'
   };
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
@@ -39,9 +43,7 @@
   function init() {
     const ifr = document.getElementById(IFRAME_ID) || document.querySelector(`iframe[name="${IFRAME_NAME}"]`);
     if (!ifr) return;
-    const onLoad = () => inject(ifr);
-    ifr.addEventListener('load', onLoad);
-    window.addEventListener('resize', () => positionPanel(ifr));
+    ifr.addEventListener('load', () => inject(ifr));
     inject(ifr);
   }
 
@@ -57,31 +59,59 @@
       /intimac/i.test(url);
 
     if (!isIntimacaoPage) {
-      document.getElementById(BTN_CONTAINER_ID)?.remove();
+      document.getElementById(ROOT_ID)?.remove();
       return;
     }
 
-    document.getElementById(BTN_CONTAINER_ID)?.remove();
+    ensureFontAwesome(document);
+    mountUI(ifr);
+  }
 
-    const container = document.createElement('div');
-    container.id = BTN_CONTAINER_ID;
-    Object.assign(container.style, {
+  function ensureFontAwesome(doc) {
+    if (doc.getElementById('pj-fa-cdn')) return;
+    const link = doc.createElement('link');
+    link.id = 'pj-fa-cdn';
+    link.rel = 'stylesheet';
+    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css';
+    doc.head.appendChild(link);
+  }
+
+  function mountUI(ifr) {
+    document.getElementById(ROOT_ID)?.remove();
+
+    const root = document.createElement('div');
+    root.id = ROOT_ID;
+    Object.assign(root.style, {
       position: 'fixed',
-      bottom: '12px',
+      right: '16px',
+      bottom: '16px',
+      zIndex: '2147483647',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'flex-end',
+      gap: `${UI.gap}px`
+    });
+
+    const menu = document.createElement('div');
+    menu.id = MENU_ID;
+    Object.assign(menu.style, {
       display: 'flex',
       flexDirection: 'column',
       gap: `${UI.gap}px`,
-      zIndex: '2147483647',
-      width: `${UI.width}px`
+      width: `${UI.menuWidth}px`,
+      opacity: '0',
+      transform: 'translateY(8px)',
+      pointerEvents: 'none',
+      transition: 'opacity .16s ease, transform .16s ease'
     });
 
-    const btnAll = createButton(document, BTN_ALL_ID, 'Carregar tudo');
+    const btnAll = createActionButton(BTN_ALL_ID, 'Carregar todas');
     btnAll.addEventListener('click', () => unifyInsideIframe(ifr, btnAll));
 
-    const btn10 = createButton(document, BTN_10_ID, 'Carregar 10');
+    const btn10 = createActionButton(BTN_10_ID, 'Carregar 10 páginas');
     btn10.addEventListener('click', () => unifyInsideIframe(ifr, btn10, 10));
 
-    const btnCustom = createButton(document, BTN_CUSTOM_ID, 'Carregar N');
+    const btnCustom = createActionButton(BTN_CUSTOM_ID, 'Carregar N páginas');
     btnCustom.addEventListener('click', () => {
       const raw = prompt('Quantas páginas deseja carregar?', '20');
       if (raw === null) return;
@@ -93,77 +123,102 @@
       unifyInsideIframe(ifr, btnCustom, n);
     });
 
-    const btnCsv = createButton(document, BTN_CSV_ID, 'Exportar CSV');
+    const btnCsv = createActionButton(BTN_CSV_ID, 'Exportar CSV');
     btnCsv.addEventListener('click', () => exportCSV(ifr));
 
-    const btnPdf = createButton(document, BTN_PDF_ID, 'Exportar PDF');
+    const btnPdf = createActionButton(BTN_PDF_ID, 'Exportar PDF');
     btnPdf.addEventListener('click', () => exportPDF(ifr));
 
-    container.append(btnAll, btn10, btnCustom, btnCsv, btnPdf);
-    document.body.appendChild(container);
-    positionPanel(ifr);
-  }
+    menu.append(btnAll, btn10, btnCustom, btnCsv, btnPdf);
 
-  function positionPanel(ifr) {
-    const panel = document.getElementById(BTN_CONTAINER_ID);
-    if (!panel || !ifr) return;
-
-    const rect = ifr.getBoundingClientRect();
-    const margin = 12;
-    const panelWidth = UI.width;
-    const spaceRight = window.innerWidth - rect.right;
-    const spaceLeft = rect.left;
-
-    panel.style.left = '';
-    panel.style.right = '';
-
-    if (spaceRight >= panelWidth + margin) {
-      panel.style.right = `${Math.max(margin, spaceRight - 2)}px`;
-    } else if (spaceLeft >= panelWidth + margin) {
-      panel.style.left = `${Math.max(margin, rect.left - panelWidth - margin)}px`;
-    } else {
-      panel.style.right = `${margin}px`;
-    }
-  }
-
-  function createButton(d, id, label) {
-    const btn = d.createElement('button');
-    btn.id = id;
-    btn.textContent = label;
-    Object.assign(btn.style, {
-      width: `${UI.width}px`,
-      height: `${UI.height}px`,
-      padding: '0 8px',
-      background: '#1f5fa8',
+    const fab = document.createElement('button');
+    fab.id = FAB_ID;
+    fab.type = 'button';
+    fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
+    fab.setAttribute('aria-label', 'Abrir opções');
+    Object.assign(fab.style, {
+      width: '42px',
+      height: '42px',
+      borderRadius: '50%',
+      border: `1px solid ${UI.brand}`,
+      background: UI.brand,
       color: '#fff',
-      border: 'none',
-      outline: 'none',
-      borderRadius: '7px',
-      fontWeight: '700',
       cursor: 'pointer',
-      fontSize: `${UI.fontSize}px`,
+      fontSize: '16px',
+      boxShadow: '0 4px 10px rgba(0,0,0,.18)',
+      transition: 'transform .16s ease, background .16s ease'
+    });
+
+    fab.addEventListener('mouseenter', () => {
+      fab.style.background = UI.brandHover;
+      fab.style.transform = 'translateY(-1px)';
+    });
+
+    fab.addEventListener('mouseleave', () => {
+      fab.style.background = UI.brand;
+      fab.style.transform = 'translateY(0)';
+    });
+
+    let isOpen = false;
+    const setOpen = (open) => {
+      isOpen = open;
+      if (isOpen) {
+        menu.style.opacity = '1';
+        menu.style.transform = 'translateY(0)';
+        menu.style.pointerEvents = 'auto';
+        fab.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      } else {
+        menu.style.opacity = '0';
+        menu.style.transform = 'translateY(8px)';
+        menu.style.pointerEvents = 'none';
+        fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
+      }
+    };
+
+    fab.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setOpen(!isOpen);
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!root.contains(e.target)) setOpen(false);
+    });
+
+    root.append(menu, fab);
+    document.body.appendChild(root);
+  }
+
+  function createActionButton(id, label) {
+    const btn = document.createElement('button');
+    btn.id = id;
+    btn.type = 'button';
+    btn.textContent = label;
+
+    Object.assign(btn.style, {
+      width: `${UI.menuWidth}px`,
+      height: `${UI.btnHeight}px`,
+      padding: '0 10px',
+      background: UI.brand,
+      color: '#fff',
+      border: `1px solid ${UI.brand}`,
+      borderRadius: '3px',
+      fontWeight: '600',
+      cursor: 'pointer',
+      fontSize: '13px',
       textAlign: 'center',
-      boxShadow: '0 2px 7px rgba(0,0,0,.15)',
-      transition: 'transform .12s ease, background .12s ease, box-shadow .12s ease',
+      boxShadow: '0 2px 6px rgba(0,0,0,.12)',
+      transition: 'transform .12s ease, background .12s ease',
       whiteSpace: 'nowrap'
     });
 
     btn.addEventListener('mouseenter', () => {
-      btn.style.background = '#2d73c4';
+      btn.style.background = UI.brandHover;
       btn.style.transform = 'translateY(-1px)';
     });
 
     btn.addEventListener('mouseleave', () => {
-      btn.style.background = '#1f5fa8';
+      btn.style.background = UI.brand;
       btn.style.transform = 'translateY(0)';
-    });
-
-    btn.addEventListener('focus', () => {
-      btn.style.boxShadow = '0 0 0 2px rgba(45,115,196,.45), 0 2px 7px rgba(0,0,0,.15)';
-    });
-
-    btn.addEventListener('blur', () => {
-      btn.style.boxShadow = '0 2px 7px rgba(0,0,0,.15)';
     });
 
     return btn;
@@ -173,13 +228,14 @@
     const t = document.createElement('div');
     Object.assign(t.style, {
       position: 'fixed',
-      bottom: '180px',
-      right: '12px',
-      background: '#1f5fa8',
-      padding: '8px 12px',
+      right: '16px',
+      bottom: '72px',
+      background: UI.brand,
       color: '#fff',
-      borderRadius: '6px',
-      boxShadow: '0 3px 10px rgba(0,0,0,.25)',
+      padding: '9px 12px',
+      borderRadius: '4px',
+      border: `1px solid ${UI.brand}`,
+      boxShadow: '0 3px 10px rgba(0,0,0,.2)',
       zIndex: '2147483647',
       fontWeight: '600',
       fontSize: '12px',
@@ -191,7 +247,7 @@
     requestAnimationFrame(() => (t.style.opacity = '1'));
     setTimeout(() => {
       t.style.opacity = '0';
-      setTimeout(() => t.remove(), 300);
+      setTimeout(() => t.remove(), 250);
     }, 1800);
   }
 
@@ -224,12 +280,12 @@
       const toPage = maxPages ? Math.min(maxPages, total) : total;
 
       if (toPage <= 1) {
-        setMsg('Nada p/ carregar');
+        setMsg('Nada para carregar');
         return;
       }
 
       for (let p = 2; p <= toPage; p++) {
-        setMsg(`${p}/${toPage}...`);
+        setMsg(`Página ${p}/${toPage}...`);
         await navigateLoaderToPage(loader, p, pageInfo);
         const doc = loader.contentDocument;
         const t2 = findMainTable(doc);
@@ -241,9 +297,9 @@
       const totalRows = tbody.querySelectorAll('tr').length;
       if (!maxPages || toPage === total) {
         pager?.remove?.();
-        setMsg(`Ok (${totalRows})`);
+        setMsg(`Concluído (${totalRows} linhas)`);
       } else {
-        setMsg(`Ok ${toPage}p`);
+        setMsg(`${toPage} páginas (${totalRows} linhas)`);
       }
     } catch (err) {
       console.error('[Projudi – Unificar Intimações] Erro:', err);
@@ -252,7 +308,7 @@
       setTimeout(() => {
         btn.disabled = false;
         btn.textContent = originalLabel;
-      }, 1400);
+      }, 1800);
     }
   }
 
@@ -340,7 +396,10 @@
       if (/Tipo/i.test(headText)) s += 1;
       if (/Data\s*Leitura/i.test(headText)) s += 2;
       if (/Data\s*Limite/i.test(headText)) s += 2;
-      if (s > scoreBest) { scoreBest = s; best = t; }
+      if (s > scoreBest) {
+        scoreBest = s;
+        best = t;
+      }
     }
     return best;
   }
@@ -389,7 +448,9 @@
       const ready = observeTableChange(doc);
       const idx = humanPage - 1;
       const pageSize = info.pageSizeFromHref || 15;
-      try { w.buscaDados(idx, pageSize); } catch {}
+      try {
+        w.buscaDados(idx, pageSize);
+      } catch {}
       await ready;
       return;
     }
@@ -425,7 +486,10 @@
 
   function once(target, evt) {
     return new Promise(res => {
-      const h = () => { target.removeEventListener(evt, h); res(); };
+      const h = () => {
+        target.removeEventListener(evt, h);
+        res();
+      };
       target.addEventListener(evt, h);
     });
   }
@@ -481,6 +545,10 @@
   }
 
   function safeHasFunction(win, name) {
-    try { return typeof win?.[name] === 'function'; } catch { return false; }
+    try {
+      return typeof win?.[name] === 'function';
+    } catch {
+      return false;
+    }
   }
 })();
