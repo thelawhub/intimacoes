@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações em Página Única
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.7
+// @version      2.8
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega intimações em uma única página, com exportação CSV/PDF.
 // @author       louencosv (GPT)
@@ -19,9 +19,9 @@
   const IFRAME_ID = 'Principal';
   const IFRAME_NAME = 'userMainFrame';
 
-  const ROOT_ID = 'pj-fab-root';
-  const MENU_ID = 'pj-fab-menu';
-  const FAB_ID = 'pj-fab-main';
+  const ROOT_ID = 'pj-intimacoes-root';
+  const PANEL_ID = 'pj-intimacoes-panel';
+  const FAB_ID = 'pj-intimacoes-fab';
 
   const BTN_ALL_ID = 'pj-unificar-todas-btn';
   const BTN_10_ID = 'pj-unificar-10-btn';
@@ -30,12 +30,18 @@
   const BTN_PDF_ID = 'pj-exportar-pdf-btn';
 
   const UI = {
-    menuWidth: 230,
-    btnHeight: 30,
-    gap: 6,
     brand: '#2b69aa',
-    brandHover: '#245a92'
+    brandHover: '#245a92',
+    panelBg: '#ffffff',
+    panelBorder: '#d5dde8',
+    textStrong: '#173a61',
+    textMuted: '#5f6f83',
+    fabSize: 38,
+    panelWidth: 260
   };
+
+  let outsideClickHandler = null;
+  let keydownHandler = null;
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
   else init();
@@ -59,7 +65,7 @@
       /intimac/i.test(url);
 
     if (!isIntimacaoPage) {
-      document.getElementById(ROOT_ID)?.remove();
+      teardownUI();
       return;
     }
 
@@ -76,8 +82,20 @@
     doc.head.appendChild(link);
   }
 
-  function mountUI(ifr) {
+  function teardownUI() {
     document.getElementById(ROOT_ID)?.remove();
+    if (outsideClickHandler) {
+      document.removeEventListener('click', outsideClickHandler, true);
+      outsideClickHandler = null;
+    }
+    if (keydownHandler) {
+      document.removeEventListener('keydown', keydownHandler, true);
+      keydownHandler = null;
+    }
+  }
+
+  function mountUI(ifr) {
+    teardownUI();
 
     const root = document.createElement('div');
     root.id = ROOT_ID;
@@ -89,29 +107,53 @@
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'flex-end',
-      gap: `${UI.gap}px`
+      gap: '6px',
+      fontFamily: 'Arial, sans-serif'
     });
 
-    const menu = document.createElement('div');
-    menu.id = MENU_ID;
-    Object.assign(menu.style, {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: `${UI.gap}px`,
-      width: `${UI.menuWidth}px`,
+    const panel = document.createElement('div');
+    panel.id = PANEL_ID;
+    Object.assign(panel.style, {
+      width: `${UI.panelWidth}px`,
+      background: UI.panelBg,
+      border: `1px solid ${UI.panelBorder}`,
+      borderRadius: '10px',
+      boxShadow: '0 10px 28px rgba(12,33,56,.22)',
+      overflow: 'hidden',
       opacity: '0',
-      transform: 'translateY(8px)',
+      transform: 'translateY(8px) scale(.98)',
       pointerEvents: 'none',
-      transition: 'opacity .16s ease, transform .16s ease'
+      transition: 'opacity .15s ease, transform .15s ease'
     });
 
-    const btnAll = createActionButton(BTN_ALL_ID, 'Carregar todas');
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      background: 'linear-gradient(180deg, #2f72b8 0%, #2b69aa 100%)',
+      color: '#fff',
+      padding: '9px 10px',
+      fontSize: '12px',
+      fontWeight: '700',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'flex-start'
+    });
+    header.innerHTML = '<span><i class="fa-solid fa-scale-balanced" style="margin-right:6px;"></i>Ações de Intimações</span>';
+
+    const content = document.createElement('div');
+    Object.assign(content.style, {
+      padding: '6px',
+      display: 'grid',
+      gap: '4px',
+      background: '#f7f9fc'
+    });
+
+    const btnAll = createActionButton(BTN_ALL_ID, 'fa-layer-group', 'Carregar todas as páginas');
     btnAll.addEventListener('click', () => unifyInsideIframe(ifr, btnAll));
 
-    const btn10 = createActionButton(BTN_10_ID, 'Carregar 10 páginas');
+    const btn10 = createActionButton(BTN_10_ID, 'fa-bolt', 'Carregar 10 páginas');
     btn10.addEventListener('click', () => unifyInsideIframe(ifr, btn10, 10));
 
-    const btnCustom = createActionButton(BTN_CUSTOM_ID, 'Carregar N páginas');
+    const btnCustom = createActionButton(BTN_CUSTOM_ID, 'fa-hashtag', 'Carregar X páginas');
     btnCustom.addEventListener('click', () => {
       const raw = prompt('Quantas páginas deseja carregar?', '20');
       if (raw === null) return;
@@ -123,30 +165,38 @@
       unifyInsideIframe(ifr, btnCustom, n);
     });
 
-    const btnCsv = createActionButton(BTN_CSV_ID, 'Exportar CSV');
+    const divider = document.createElement('div');
+    Object.assign(divider.style, {
+      height: '1px',
+      background: '#dde5f0',
+      margin: '1px 0'
+    });
+
+    const btnCsv = createActionButton(BTN_CSV_ID, 'fa-file-csv', 'Exportar CSV');
     btnCsv.addEventListener('click', () => exportCSV(ifr));
 
-    const btnPdf = createActionButton(BTN_PDF_ID, 'Exportar PDF');
+    const btnPdf = createActionButton(BTN_PDF_ID, 'fa-file-pdf', 'Exportar PDF');
     btnPdf.addEventListener('click', () => exportPDF(ifr));
 
-    menu.append(btnAll, btn10, btnCustom, btnCsv, btnPdf);
+    content.append(btnAll, btn10, btnCustom, divider, btnCsv, btnPdf);
+    panel.append(header, content);
 
     const fab = document.createElement('button');
     fab.id = FAB_ID;
     fab.type = 'button';
     fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
-    fab.setAttribute('aria-label', 'Abrir opções');
+    fab.setAttribute('aria-label', 'Abrir menu de ações');
     Object.assign(fab.style, {
-      width: '42px',
-      height: '42px',
+      width: `${UI.fabSize}px`,
+      height: `${UI.fabSize}px`,
       borderRadius: '50%',
       border: `1px solid ${UI.brand}`,
       background: UI.brand,
       color: '#fff',
       cursor: 'pointer',
-      fontSize: '16px',
-      boxShadow: '0 4px 10px rgba(0,0,0,.18)',
-      transition: 'transform .16s ease, background .16s ease'
+      fontSize: '14px',
+      boxShadow: '0 4px 12px rgba(0,0,0,.2)',
+      transition: 'transform .12s ease, background .12s ease'
     });
 
     fab.addEventListener('mouseenter', () => {
@@ -163,14 +213,14 @@
     const setOpen = (open) => {
       isOpen = open;
       if (isOpen) {
-        menu.style.opacity = '1';
-        menu.style.transform = 'translateY(0)';
-        menu.style.pointerEvents = 'auto';
+        panel.style.opacity = '1';
+        panel.style.transform = 'translateY(0) scale(1)';
+        panel.style.pointerEvents = 'auto';
         fab.innerHTML = '<i class="fa-solid fa-xmark"></i>';
       } else {
-        menu.style.opacity = '0';
-        menu.style.transform = 'translateY(8px)';
-        menu.style.pointerEvents = 'none';
+        panel.style.opacity = '0';
+        panel.style.transform = 'translateY(8px) scale(.98)';
+        panel.style.pointerEvents = 'none';
         fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
       }
     };
@@ -180,44 +230,53 @@
       setOpen(!isOpen);
     });
 
-    document.addEventListener('click', (e) => {
+    outsideClickHandler = (e) => {
       if (!root.contains(e.target)) setOpen(false);
-    });
+    };
+    document.addEventListener('click', outsideClickHandler, true);
 
-    root.append(menu, fab);
+    keydownHandler = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('keydown', keydownHandler, true);
+
+    root.append(panel, fab);
     document.body.appendChild(root);
   }
 
-  function createActionButton(id, label) {
+  function createActionButton(id, iconClass, label) {
     const btn = document.createElement('button');
     btn.id = id;
     btn.type = 'button';
-    btn.textContent = label;
+    btn.innerHTML = `<i class="fa-solid ${iconClass}" style="width:15px;text-align:center;"></i><span>${label}</span>`;
 
     Object.assign(btn.style, {
-      width: `${UI.menuWidth}px`,
-      height: `${UI.btnHeight}px`,
+      width: '100%',
+      height: '30px',
       padding: '0 10px',
-      background: UI.brand,
-      color: '#fff',
-      border: `1px solid ${UI.brand}`,
-      borderRadius: '3px',
+      background: '#fff',
+      color: UI.textStrong,
+      border: '1px solid #cfdae8',
+      borderRadius: '6px',
       fontWeight: '600',
       cursor: 'pointer',
       fontSize: '13px',
-      textAlign: 'center',
-      boxShadow: '0 2px 6px rgba(0,0,0,.12)',
-      transition: 'transform .12s ease, background .12s ease',
-      whiteSpace: 'nowrap'
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      gap: '7px',
+      transition: 'transform .12s ease, border-color .12s ease, background .12s ease'
     });
 
     btn.addEventListener('mouseenter', () => {
-      btn.style.background = UI.brandHover;
+      btn.style.background = '#edf4fc';
+      btn.style.borderColor = '#9ebce0';
       btn.style.transform = 'translateY(-1px)';
     });
 
     btn.addEventListener('mouseleave', () => {
-      btn.style.background = UI.brand;
+      btn.style.background = '#fff';
+      btn.style.borderColor = '#cfdae8';
       btn.style.transform = 'translateY(0)';
     });
 
@@ -229,10 +288,10 @@
     Object.assign(t.style, {
       position: 'fixed',
       right: '16px',
-      bottom: '72px',
+      bottom: '64px',
       background: UI.brand,
       color: '#fff',
-      padding: '9px 12px',
+      padding: '8px 11px',
       borderRadius: '4px',
       border: `1px solid ${UI.brand}`,
       boxShadow: '0 3px 10px rgba(0,0,0,.2)',
@@ -253,8 +312,11 @@
 
   async function unifyInsideIframe(mainFrame, btn, maxPages = null) {
     const d = mainFrame.contentDocument;
-    const originalLabel = btn.textContent;
-    const setMsg = (m) => (btn.textContent = m);
+    const originalLabel = btn.querySelector('span')?.textContent || btn.textContent;
+    const icon = btn.querySelector('i')?.outerHTML || '';
+    const setMsg = (m) => {
+      btn.innerHTML = `${icon}<span>${m}</span>`;
+    };
     btn.disabled = true;
 
     try {
@@ -290,7 +352,7 @@
         const doc = loader.contentDocument;
         const t2 = findMainTable(doc);
         if (!t2) continue;
-        const rows = Array.from(t2.querySelectorAll('tbody tr, tr')).filter(tr => tr.querySelector('td'));
+        const rows = Array.from(t2.querySelectorAll('tbody tr, tr')).filter((tr) => tr.querySelector('td'));
         for (const tr of rows) tbody.appendChild(d.importNode(tr, true));
       }
 
@@ -303,11 +365,11 @@
       }
     } catch (err) {
       console.error('[Projudi – Unificar Intimações] Erro:', err);
-      btn.textContent = 'Erro';
+      setMsg('Erro');
     } finally {
       setTimeout(() => {
         btn.disabled = false;
-        btn.textContent = originalLabel;
+        btn.innerHTML = `${icon}<span>${originalLabel}</span>`;
       }, 1800);
     }
   }
@@ -324,12 +386,12 @@
     const rows = [];
     const pushRow = (cells) => rows.push(cells.map(cleanCSV).join(delimiter));
 
-    const ths = Array.from((table.tHead || table).querySelectorAll('th')).map(th => th.innerText.trim());
+    const ths = Array.from((table.tHead || table).querySelectorAll('th')).map((th) => th.innerText.trim());
     if (ths.length) pushRow(ths);
 
     const trs = Array.from(table.querySelectorAll('tbody tr'));
     for (const tr of trs) {
-      const tds = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
+      const tds = Array.from(tr.querySelectorAll('td')).map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim());
       if (tds.length) pushRow(tds);
     }
 
@@ -386,7 +448,8 @@
 
   function findMainTable(root) {
     const tables = Array.from(root.querySelectorAll('table'));
-    let best = null, scoreBest = -1;
+    let best = null;
+    let scoreBest = -1;
     for (const t of tables) {
       const headText = (t.tHead || t).textContent || '';
       let s = 0;
@@ -405,8 +468,9 @@
   }
 
   function findPagerFallback(root) {
-    const blocks = Array.from(root.querySelectorAll('div,nav,td,p,form,span'))
-      .filter(el => /\bPágina\b/i.test(el.textContent || '') && el.querySelectorAll('a').length);
+    const blocks = Array.from(root.querySelectorAll('div,nav,td,p,form,span')).filter(
+      (el) => /\bPágina\b/i.test(el.textContent || '') && el.querySelectorAll('a').length
+    );
     if (blocks.length) return blocks.sort((a, b) => b.querySelectorAll('a').length - a.querySelectorAll('a').length)[0];
     return null;
   }
@@ -417,7 +481,7 @@
     let total = input ? parseInt((input.value || input.getAttribute('value') || '').trim(), 10) : NaN;
 
     if (!total || isNaN(total)) {
-      const lastA = Array.from(pagerEl.querySelectorAll('a')).find(a => /última|ultima/i.test(a.textContent || ''));
+      const lastA = Array.from(pagerEl.querySelectorAll('a')).find((a) => /última|ultima/i.test(a.textContent || ''));
       if (lastA) {
         const idx = extractLastNumber(lastA.getAttribute('href'));
         if (typeof idx === 'number') total = idx + 1;
@@ -470,8 +534,9 @@
       }
     }
 
-    const a = Array.from(doc.querySelectorAll('#Paginacao a, .Paginacao a, a'))
-      .find(x => parseInt((x.textContent || '').trim(), 10) === humanPage);
+    const a = Array.from(doc.querySelectorAll('#Paginacao a, .Paginacao a, a')).find(
+      (x) => parseInt((x.textContent || '').trim(), 10) === humanPage
+    );
 
     if (a) {
       const ready = observeTableChange(doc);
@@ -485,7 +550,7 @@
   }
 
   function once(target, evt) {
-    return new Promise(res => {
+    return new Promise((res) => {
       const h = () => {
         target.removeEventListener(evt, h);
         res();
@@ -495,7 +560,7 @@
   }
 
   function observeTableChange(doc) {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       const startCount = doc.querySelectorAll('table tbody tr').length || 0;
       const root = doc.body;
       const obs = new MutationObserver(() => {
