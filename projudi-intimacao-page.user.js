@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Intimações em Página Única
+// @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.8
+// @version      2.9
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega intimações em uma única página, com exportação CSV/PDF.
 // @author       louencosv (GPT)
@@ -28,6 +28,8 @@
   const BTN_CUSTOM_ID = 'pj-unificar-custom-btn';
   const BTN_CSV_ID = 'pj-exportar-csv-btn';
   const BTN_PDF_ID = 'pj-exportar-pdf-btn';
+  const JSPDF_CDN = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+  const AUTOTABLE_CDN = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
 
   const UI = {
     brand: '#2b69aa',
@@ -42,6 +44,7 @@
 
   let outsideClickHandler = null;
   let keydownHandler = null;
+  let pdfLibPromise = null;
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
   else init();
@@ -422,6 +425,89 @@
       return;
     }
 
+    exportPDFWithJSPDF(table).catch((err) => {
+      console.error('[Projudi – Exportar PDF] fallback impressão:', err);
+      exportPDFViaPrintWindow(table);
+    });
+  }
+
+  async function exportPDFWithJSPDF(table) {
+    showToast('Gerando PDF...');
+    await ensurePdfLibs();
+
+    const jsPDFNS = window.jspdf;
+    if (!jsPDFNS || typeof jsPDFNS.jsPDF !== 'function') {
+      throw new Error('jsPDF indisponível');
+    }
+    if (typeof window.jspdf.jsPDF.API.autoTable !== 'function') {
+      throw new Error('AutoTable indisponível');
+    }
+
+    const { head, body } = tableToMatrix(table);
+    if (!body.length) throw new Error('Sem dados para exportação');
+
+    const now = new Date();
+    const dateStr = now.toLocaleString('pt-BR');
+    const doc = new window.jspdf.jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4',
+      compress: true
+    });
+
+    const pageW = doc.internal.pageSize.getWidth();
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.text('Intimações', 10, 10);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.text(`Gerado em: ${dateStr}`, 10, 15);
+
+    doc.autoTable({
+      head,
+      body,
+      startY: 19,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [238, 242, 247],
+        textColor: [20, 32, 54],
+        fontSize: 8,
+        fontStyle: 'bold'
+      },
+      bodyStyles: {
+        fontSize: 7,
+        textColor: [26, 31, 44],
+        valign: 'top',
+        cellPadding: 1.2,
+        lineColor: [215, 221, 231],
+        lineWidth: 0.1
+      },
+      margin: { top: 19, right: 7, bottom: 10, left: 7 },
+      styles: {
+        overflow: 'linebreak',
+        cellWidth: 'wrap',
+        minCellHeight: 4
+      },
+      willDrawCell: function (data) {
+        if (data.section === 'body' && data.column.index === 0) {
+          data.cell.styles.halign = 'center';
+        }
+      },
+      didDrawPage: function () {
+        const page = doc.internal.getNumberOfPages();
+        doc.setFontSize(8);
+        doc.setTextColor(90, 104, 124);
+        doc.text(`Página ${page}`, pageW - 22, doc.internal.pageSize.getHeight() - 4);
+      }
+    });
+
+    const pad = (n) => String(n).padStart(2, '0');
+    const fname = `intimacoes_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.pdf`;
+    doc.save(fname);
+    showToast('PDF gerado');
+  }
+
+  function exportPDFViaPrintWindow(table) {
     const printWin = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=800');
     if (!printWin) {
       alert('Bloqueador de pop-up ativo. Permita pop-up para gerar PDF.');
@@ -429,14 +515,68 @@
     }
 
     const dateStr = new Date().toLocaleString('pt-BR');
-
     printWin.document.open();
     printWin.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimações</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimações</h1><div class="meta">Gerado em: ${dateStr}</div>${table.outerHTML}</body></html>`);
     printWin.document.close();
     printWin.focus();
     setTimeout(() => printWin.print(), 250);
-
     showToast('Impressão PDF aberta');
+  }
+
+  async function ensurePdfLibs() {
+    if (window.jspdf?.jsPDF && typeof window.jspdf.jsPDF.API.autoTable === 'function') return;
+    if (pdfLibPromise) return pdfLibPromise;
+
+    pdfLibPromise = (async () => {
+      await loadScript(JSPDF_CDN);
+      await loadScript(AUTOTABLE_CDN);
+      if (!window.jspdf?.jsPDF || typeof window.jspdf.jsPDF.API.autoTable !== 'function') {
+        throw new Error('Falha ao carregar jsPDF/AutoTable');
+      }
+    })();
+
+    try {
+      await pdfLibPromise;
+    } finally {
+      pdfLibPromise = null;
+    }
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[data-pj-src="${src}"]`)) {
+        const s = document.querySelector(`script[data-pj-src="${src}"]`);
+        if (s.getAttribute('data-loaded') === '1') return resolve();
+        s.addEventListener('load', () => resolve(), { once: true });
+        s.addEventListener('error', () => reject(new Error(`Erro ao carregar ${src}`)), { once: true });
+        return;
+      }
+
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.setAttribute('data-pj-src', src);
+      s.onload = () => {
+        s.setAttribute('data-loaded', '1');
+        resolve();
+      };
+      s.onerror = () => reject(new Error(`Erro ao carregar ${src}`));
+      document.head.appendChild(s);
+    });
+  }
+
+  function tableToMatrix(table) {
+    const headRow = table.querySelector('thead tr') || table.querySelector('tr');
+    const head = [Array.from(headRow?.querySelectorAll('th,td') || []).map((el) => compactText(el.innerText || el.textContent || ''))];
+    const bodyRows = Array.from(table.querySelectorAll('tbody tr')).filter((tr) => tr.querySelector('td'));
+    const body = bodyRows.map((tr) =>
+      Array.from(tr.querySelectorAll('td')).map((td) => compactText(td.innerText || td.textContent || ''))
+    );
+    return { head, body };
+  }
+
+  function compactText(v) {
+    return String(v || '').replace(/\s+/g, ' ').trim();
   }
 
   function cleanCSV(value) {
