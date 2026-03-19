@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      2.9
+// @version      3.0
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Remove a paginação e agrega intimações em uma única página, com exportação CSV/PDF.
 // @author       louencosv (GPT)
@@ -30,6 +30,7 @@
   const BTN_PDF_ID = 'pj-exportar-pdf-btn';
   const JSPDF_CDN = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
   const AUTOTABLE_CDN = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
+  const LOG_PREFIX = '[Intimações]';
 
   const UI = {
     brand: '#2b69aa',
@@ -45,6 +46,28 @@
   let outsideClickHandler = null;
   let keydownHandler = null;
   let pdfLibPromise = null;
+  let mountedFrame = null;
+
+  function logWarn(message, meta) {
+    if (meta === undefined) {
+      console.warn(LOG_PREFIX, message);
+      return;
+    }
+    console.warn(LOG_PREFIX, message, meta);
+  }
+
+  function logError(message, error) {
+    console.error(LOG_PREFIX, message, error);
+  }
+
+  function safeRun(label, task, fallbackValue) {
+    try {
+      return task();
+    } catch (error) {
+      logError(label, error);
+      return fallbackValue;
+    }
+  }
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
   else init();
@@ -52,12 +75,12 @@
   function init() {
     const ifr = document.getElementById(IFRAME_ID) || document.querySelector(`iframe[name="${IFRAME_NAME}"]`);
     if (!ifr) return;
-    ifr.addEventListener('load', () => inject(ifr));
+    ifr.addEventListener('load', () => inject(ifr), { passive: true });
     inject(ifr);
   }
 
   function inject(ifr) {
-    const d = ifr.contentDocument;
+    const d = safeRun('Falha ao acessar o iframe principal.', () => ifr.contentDocument, null);
     if (!d || !d.body) return;
 
     const titleEl = d.querySelector('h1,h2,.Titulo,.titulo');
@@ -72,6 +95,7 @@
       return;
     }
 
+    if (mountedFrame === ifr && document.getElementById(ROOT_ID)) return;
     ensureFontAwesome(document);
     mountUI(ifr);
   }
@@ -87,6 +111,7 @@
 
   function teardownUI() {
     document.getElementById(ROOT_ID)?.remove();
+    mountedFrame = null;
     if (outsideClickHandler) {
       document.removeEventListener('click', outsideClickHandler, true);
       outsideClickHandler = null;
@@ -99,6 +124,7 @@
 
   function mountUI(ifr) {
     teardownUI();
+    mountedFrame = ifr;
 
     const root = document.createElement('div');
     root.id = ROOT_ID;
@@ -314,7 +340,8 @@
   }
 
   async function unifyInsideIframe(mainFrame, btn, maxPages = null) {
-    const d = mainFrame.contentDocument;
+    const d = safeRun('Falha ao acessar o documento do iframe.', () => mainFrame.contentDocument, null);
+    if (!d) return;
     const originalLabel = btn.querySelector('span')?.textContent || btn.textContent;
     const icon = btn.querySelector('i')?.outerHTML || '';
     const setMsg = (m) => {
@@ -367,7 +394,7 @@
         setMsg(`${toPage} páginas (${totalRows} linhas)`);
       }
     } catch (err) {
-      console.error('[Projudi – Unificar Intimações] Erro:', err);
+      logError('Erro ao unificar páginas de intimações.', err);
       setMsg('Erro');
     } finally {
       setTimeout(() => {
@@ -418,7 +445,7 @@
   }
 
   function exportPDF(ifr) {
-    const d = ifr.contentDocument;
+    const d = safeRun('Falha ao acessar a tabela para PDF.', () => ifr.contentDocument, null);
     const table = findMainTable(d);
     if (!table) {
       alert('Tabela não encontrada para exportação.');
@@ -426,7 +453,7 @@
     }
 
     exportPDFWithJSPDF(table).catch((err) => {
-      console.error('[Projudi – Exportar PDF] fallback impressão:', err);
+      logWarn('Falha no jsPDF; usando fallback de impressão.', err);
       exportPDFViaPrintWindow(table);
     });
   }
@@ -646,7 +673,8 @@
 
   async function navigateLoaderToPage(loader, humanPage, info) {
     const w = loader.contentWindow;
-    const doc = loader.contentDocument;
+    const doc = safeRun('Falha ao acessar o iframe loader.', () => loader.contentDocument, null);
+    if (!doc) throw new Error('Documento do loader indisponível.');
 
     if (info.canCallBuscaDados && typeof w.buscaDados === 'function') {
       const ready = observeTableChange(doc);
@@ -695,24 +723,33 @@
         target.removeEventListener(evt, h);
         res();
       };
-      target.addEventListener(evt, h);
+      target.addEventListener(evt, h, { once: true });
     });
   }
 
   function observeTableChange(doc) {
     return new Promise((resolve) => {
-      const startCount = doc.querySelectorAll('table tbody tr').length || 0;
-      const root = doc.body;
-      const obs = new MutationObserver(() => {
-        const now = doc.querySelectorAll('table tbody tr').length;
+      const table = findMainTable(doc);
+      const root = table?.tBodies?.[0] || table || doc.body;
+      if (!root) {
+        resolve();
+        return;
+      }
+      const getRowCount = () => {
+        if (!table) return doc.querySelectorAll('table tbody tr').length || 0;
+        return table.querySelectorAll('tbody tr, tr').length || 0;
+      };
+      const startCount = getRowCount();
+      const observer = new MutationObserver(() => {
+        const now = getRowCount();
         if (now !== startCount && now > 0) {
-          obs.disconnect();
+          observer.disconnect();
           resolve();
         }
       });
-      obs.observe(root, { childList: true, subtree: true });
+      observer.observe(root, { childList: true, subtree: true });
       setTimeout(() => {
-        obs.disconnect();
+        observer.disconnect();
         resolve();
       }, 8000);
     });
@@ -752,7 +789,8 @@
   function safeHasFunction(win, name) {
     try {
       return typeof win?.[name] === 'function';
-    } catch {
+    } catch (error) {
+      logWarn(`Falha ao verificar função ${name}.`, error);
       return false;
     }
   }
