@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Intimações
+// @name         Intimacoes
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.1
+// @version      3.2
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
-// @description  Remove a paginação, agrega intimações em uma única página, exporta CSV/PDF e permite marcar intimações com triagem local.
+// @description  Reune intimações em uma pagina, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memoria.
 // @author       louencosv (GPT)
 // @license      CC BY-NC 4.0
 // @updateURL    https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
@@ -20,50 +20,194 @@
 (() => {
   'use strict';
 
-  const IFRAME_ID = 'Principal';
-  const IFRAME_NAME = 'userMainFrame';
+  if (window.top !== window.self) return;
 
-  const ROOT_ID = 'pj-intimacoes-root';
-  const PANEL_ID = 'pj-intimacoes-panel';
-  const FAB_ID = 'pj-intimacoes-fab';
+  const SCRIPT_NAME = 'Intimacoes';
+  const SCRIPT_VERSION =
+    typeof GM_info !== 'undefined' && GM_info?.script?.version
+      ? String(GM_info.script.version)
+      : '3.2';
+  const LOG_PREFIX = '[Intimacoes]';
 
-  const BTN_ALL_ID = 'pj-unificar-todas-btn';
-  const BTN_10_ID = 'pj-unificar-10-btn';
-  const BTN_CUSTOM_ID = 'pj-unificar-custom-btn';
-  const BTN_CSV_ID = 'pj-exportar-csv-btn';
-  const BTN_PDF_ID = 'pj-exportar-pdf-btn';
-  const JSPDF_CDN = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
-  const AUTOTABLE_CDN = 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js';
-  const LOG_PREFIX = '[Intimações]';
-
-  const UI = {
-    brand: '#2b69aa',
-    brandHover: '#245a92',
-    panelBg: '#ffffff',
-    panelBorder: '#d5dde8',
-    textStrong: '#173a61',
-    textMuted: '#5f6f83',
-    fabSize: 38,
-    panelWidth: 260
+  const SELECTORS = {
+    mainFrame: 'iframe#Principal, iframe[name="userMainFrame"]',
+    title: 'h1, h2, .Titulo, .titulo',
+    table: 'table',
+    relevantTable: 'table.Tabela, table#Tabela',
+    pager: '#Paginacao, .Paginacao',
+    pagerClickable: '#Paginacao a, #Paginacao button, .Paginacao a, .Paginacao button, .BotaoIr, a[href*="buscaDados"], [onclick*="buscaDados"]',
+    processAction: 'a[href*="BuscaProcesso"], button[onclick*="BuscaProcesso"], [onclick*="BuscaProcesso"]',
+    nativeDoneAction:
+      'button[onclick*="DescartarPendenciaProcesso"], a[href*="DescartarPendenciaProcesso"], button[title*="marcar" i], a[title*="marcar" i]'
   };
 
-  let outsideClickHandler = null;
-  let keydownHandler = null;
-  let pdfLibPromise = null;
-  let mountedFrame = null;
+  const IDS = {
+    hostStyle: 'pjip-host-style',
+    frameStyle: 'pjip-frame-style',
+    hostRoot: 'pjip-root',
+    actionsPanel: 'pjip-actions-panel',
+    actionsFab: 'pjip-actions-fab',
+    toast: 'pjip-toast',
+    modalOverlay: 'pjip-modal-overlay',
+    modalPanel: 'pjip-modal-panel'
+  };
 
-  function logWarn(message, meta) {
-    if (meta === undefined) {
+  const STORAGE_KEYS = {
+    store: 'pj-intimacoes-marcadas::store',
+    backup: 'pj-intimacoes-marcadas::backup'
+  };
+
+  const BACKUP_DEFAULTS = {
+    enabled: false,
+    gistId: '',
+    token: '',
+    fileName: 'projudi-intimacao-page.json',
+    autoBackupOnSave: false,
+    lastBackupAt: '',
+    lastBackupSignature: ''
+  };
+
+  const PRIVATE = {
+    tableContext: Symbol('tableContext'),
+    frameHooks: Symbol('frameHooks'),
+    patchFlag: Symbol('patchFlag'),
+    refreshToken: Symbol('refreshToken')
+  };
+
+  const PDF_CDNS = {
+    jspdf: 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js',
+    autoTable: 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js'
+  };
+
+  /** @type {{
+   * frame: HTMLIFrameElement | null,
+   * frameDoc: Document | null,
+   * frameWin: Window | null,
+   * frameLoadHandler: ((event: Event) => void) | null,
+   * pageContext: ReturnType<typeof analyzeFrameContext> | null,
+   * pageSignature: string,
+   * refreshTimers: number[],
+   * refreshNonce: number,
+   * menuCommandId: number | null,
+   * hostHooksAttached: boolean,
+   * menuOpen: boolean,
+   * modalOpen: boolean,
+   * modalRoot: HTMLElement | null,
+   * toastTimer: number,
+   * backupTimer: number,
+   * pdfPromise: Promise<void> | null,
+   * store: ReturnType<typeof loadStore>
+   * }}
+   */
+  const state = {
+    frame: null,
+    frameDoc: null,
+    frameWin: null,
+    frameLoadHandler: null,
+    pageContext: null,
+    pageSignature: '',
+    refreshTimers: [],
+    refreshNonce: 0,
+    menuCommandId: null,
+    hostHooksAttached: false,
+    menuOpen: false,
+    modalOpen: false,
+    modalRoot: null,
+    toastTimer: 0,
+    backupTimer: 0,
+    pdfPromise: null,
+    store: loadStore()
+  };
+
+  init();
+
+  /**
+   * Inicializa o script com o menor numero possivel de hooks permanentes.
+   */
+  function init() {
+    injectHostStyles();
+    attachHostHooks();
+    registerMenuCommand();
+    bindMainFrame();
+    refreshFrameContext('init');
+  }
+
+  /**
+   * Anexa hooks globais uma unica vez.
+   */
+  function attachHostHooks() {
+    if (state.hostHooksAttached) return;
+    state.hostHooksAttached = true;
+
+    document.addEventListener(
+      'click',
+      (event) => {
+        const target = /** @type {Element | null} */ (event.target instanceof Element ? event.target : null);
+        if (!target) return;
+        const root = document.getElementById(IDS.hostRoot);
+        if (root && !root.contains(target)) {
+          state.menuOpen = false;
+          updateActionPanelState();
+        }
+      },
+      true
+    );
+
+    document.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key !== 'Escape') return;
+        state.menuOpen = false;
+        updateActionPanelState();
+        if (state.modalOpen) closeModal();
+      },
+      true
+    );
+  }
+
+  /**
+   * Escreve log de informacao pontual.
+   * @param {string} message
+   * @param {unknown=} details
+   */
+  function logInfo(message, details) {
+    if (details === undefined) {
+      console.info(LOG_PREFIX, message);
+      return;
+    }
+    console.info(LOG_PREFIX, message, details);
+  }
+
+  /**
+   * Escreve log de alerta.
+   * @param {string} message
+   * @param {unknown=} details
+   */
+  function logWarn(message, details) {
+    if (details === undefined) {
       console.warn(LOG_PREFIX, message);
       return;
     }
-    console.warn(LOG_PREFIX, message, meta);
+    console.warn(LOG_PREFIX, message, details);
   }
 
+  /**
+   * Escreve log de erro.
+   * @param {string} message
+   * @param {unknown} error
+   */
   function logError(message, error) {
     console.error(LOG_PREFIX, message, error);
   }
 
+  /**
+   * Executa um bloco com tratamento de erro uniforme.
+   * @template T
+   * @param {string} label
+   * @param {() => T} task
+   * @param {T=} fallbackValue
+   * @returns {T | undefined}
+   */
   function safeRun(label, task, fallbackValue) {
     try {
       return task();
@@ -73,412 +217,1550 @@
     }
   }
 
-  if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
-  else init();
-
-  function init() {
-    const ifr = document.getElementById(IFRAME_ID) || document.querySelector(`iframe[name="${IFRAME_NAME}"]`);
-    if (!ifr) return;
-    ifr.addEventListener('load', () => inject(ifr), { passive: true });
-    inject(ifr);
+  /**
+   * Obtém o iframe principal do Projudi.
+   * @returns {HTMLIFrameElement | null}
+   */
+  function findMainFrame() {
+    return /** @type {HTMLIFrameElement | null} */ (document.querySelector(SELECTORS.mainFrame));
   }
 
-  function inject(ifr) {
-    const d = safeRun('Falha ao acessar o iframe principal.', () => ifr.contentDocument, null);
-    if (!d || !d.body) return;
+  /**
+   * Vincula o script ao iframe principal e reutiliza o mesmo listener.
+   */
+  function bindMainFrame() {
+    const frame = findMainFrame();
+    if (!frame || frame === state.frame) return;
 
-    const titleEl = d.querySelector('h1,h2,.Titulo,.titulo');
-    const titleText = (titleEl?.textContent || '').trim();
-    const url = ifr.contentWindow?.location?.href || '';
-    const isIntimacaoPage =
-      /intima(ç|c)(a|ã)o|intima(ç|c)ões/i.test(titleText) ||
-      /intimac/i.test(url);
+    if (state.frame && state.frameLoadHandler) {
+      state.frame.removeEventListener('load', state.frameLoadHandler);
+    }
 
-    if (!isIntimacaoPage) {
-      teardownUI();
+    state.frame = frame;
+    state.frameLoadHandler = () => {
+      onFrameLoaded(frame);
+    };
+
+    frame.addEventListener('load', state.frameLoadHandler, { passive: true });
+    onFrameLoaded(frame);
+  }
+
+  /**
+   * Reage ao carregamento do iframe sem manter observers permanentes.
+   * @param {HTMLIFrameElement} frame
+   */
+  function onFrameLoaded(frame) {
+    clearRefreshTimers();
+    state.frameDoc = safeRun('Falha ao acessar o documento do iframe principal.', () => frame.contentDocument, null) || null;
+    state.frameWin = safeRun('Falha ao acessar a janela do iframe principal.', () => frame.contentWindow, null) || null;
+    if (!state.frameDoc || !state.frameDoc.body) return;
+
+    attachFrameHooks(state.frameDoc);
+    patchFrameFunctions(state.frameWin);
+    refreshFrameContext('frame-load');
+  }
+
+  /**
+   * Anexa hooks leves ao documento do iframe.
+   * Em vez de observar a arvore inteira, o script reage apenas a eventos relevantes.
+   * @param {Document} doc
+   */
+  function attachFrameHooks(doc) {
+    if (doc[PRIVATE.frameHooks]) return;
+    doc[PRIVATE.frameHooks] = true;
+
+    doc.addEventListener(
+      'click',
+      (event) => {
+        handleFrameClick(event);
+      },
+      true
+    );
+  }
+
+  /**
+   * Encapsula funcoes de paginacao conhecidas para reagir a atualizacoes AJAX
+   * sem depender de MutationObserver continuo.
+   * @param {Window | null} frameWin
+   */
+  function patchFrameFunctions(frameWin) {
+    if (!frameWin) return;
+
+    const candidates = ['buscaDados'];
+    for (const functionName of candidates) {
+      const current = safeRun(`Falha ao acessar ${functionName}.`, () => frameWin[functionName], null);
+      if (typeof current !== 'function') continue;
+      if (current[PRIVATE.patchFlag]) continue;
+
+      const wrapped = function (...args) {
+        const result = current.apply(this, args);
+        scheduleRefreshBurst(`${functionName}-call`);
+        return result;
+      };
+
+      wrapped[PRIVATE.patchFlag] = true;
+      frameWin[functionName] = wrapped;
+    }
+  }
+
+  /**
+   * Decide o que precisa ser feito apos um clique dentro do iframe.
+   * @param {MouseEvent} event
+   */
+  function handleFrameClick(event) {
+    const target = /** @type {Element | null} */ (event.target instanceof Element ? event.target : null);
+    if (!target) return;
+
+    const actionButton = target.closest('[data-pjip-action]');
+    if (actionButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      handleInlineAction(actionButton);
       return;
     }
 
-    if (mountedFrame === ifr && document.getElementById(ROOT_ID)) return;
-    ensureFontAwesome(document);
-    mountUI(ifr);
-  }
-
-  function ensureFontAwesome(doc) {
-    if (doc.getElementById('pj-fa-cdn')) return;
-    const link = doc.createElement('link');
-    link.id = 'pj-fa-cdn';
-    link.rel = 'stylesheet';
-    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css';
-    doc.head.appendChild(link);
-  }
-
-  function teardownUI() {
-    document.getElementById(ROOT_ID)?.remove();
-    mountedFrame = null;
-    if (outsideClickHandler) {
-      document.removeEventListener('click', outsideClickHandler, true);
-      outsideClickHandler = null;
-    }
-    if (keydownHandler) {
-      document.removeEventListener('keydown', keydownHandler, true);
-      keydownHandler = null;
+    const pagerAction = target.closest(SELECTORS.pagerClickable);
+    if (pagerAction) {
+      scheduleRefreshBurst('pager-click');
     }
   }
 
-  function mountUI(ifr) {
-    teardownUI();
-    mountedFrame = ifr;
+  /**
+   * Agenda um pequeno burst de refreshes para capturar atualizacoes AJAX
+   * sem manter observers vivos durante toda a sessao.
+   * @param {string} reason
+   */
+  function scheduleRefreshBurst(reason) {
+    clearRefreshTimers();
+    const nonce = ++state.refreshNonce;
+    const delays = [120, 450, 1200];
 
-    const root = document.createElement('div');
-    root.id = ROOT_ID;
-    Object.assign(root.style, {
-      position: 'fixed',
-      right: '16px',
-      bottom: '16px',
-      zIndex: '2147483647',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'flex-end',
-      gap: '6px',
-      fontFamily: 'Arial, sans-serif'
-    });
+    for (const delay of delays) {
+      const timer = window.setTimeout(() => {
+        if (state.refreshNonce !== nonce) return;
+        refreshFrameContext(`${reason}:${delay}`);
+      }, delay);
+      state.refreshTimers.push(timer);
+    }
+  }
 
-    const panel = document.createElement('div');
-    panel.id = PANEL_ID;
-    Object.assign(panel.style, {
-      width: `${UI.panelWidth}px`,
-      background: UI.panelBg,
-      border: `1px solid ${UI.panelBorder}`,
-      borderRadius: '10px',
-      boxShadow: '0 10px 28px rgba(12,33,56,.22)',
-      overflow: 'hidden',
-      opacity: '0',
-      transform: 'translateY(8px) scale(.98)',
-      pointerEvents: 'none',
-      transition: 'opacity .15s ease, transform .15s ease'
-    });
+  /**
+   * Limpa timers de refresh pendentes.
+   */
+  function clearRefreshTimers() {
+    for (const timer of state.refreshTimers) window.clearTimeout(timer);
+    state.refreshTimers = [];
+  }
 
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      background: 'linear-gradient(180deg, #2f72b8 0%, #2b69aa 100%)',
-      color: '#fff',
-      padding: '9px 10px',
-      fontSize: '12px',
-      fontWeight: '700',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'flex-start'
-    });
-    header.innerHTML = '<span><i class="fa-solid fa-scale-balanced" style="margin-right:6px;"></i>Ações de Intimações</span>';
+  /**
+   * Reconstrói o contexto da pagina atual.
+   * @param {string} reason
+   */
+  function refreshFrameContext(reason) {
+    bindMainFrame();
+    if (!state.frame || !state.frameDoc) return;
 
-    const content = document.createElement('div');
-    Object.assign(content.style, {
-      padding: '6px',
-      display: 'grid',
-      gap: '4px',
-      background: '#f7f9fc'
-    });
+    const nextContext = analyzeFrameContext(state.frame, state.frameDoc);
+    state.pageContext = nextContext;
 
-    const btnAll = createActionButton(BTN_ALL_ID, 'fa-layer-group', 'Carregar todas as páginas');
-    btnAll.addEventListener('click', () => unifyInsideIframe(ifr, btnAll));
+    if (!nextContext.isIntimationPage) {
+      teardownActionMenu();
+      return;
+    }
 
-    const btn10 = createActionButton(BTN_10_ID, 'fa-bolt', 'Carregar 10 páginas');
-    btn10.addEventListener('click', () => unifyInsideIframe(ifr, btn10, 10));
+    injectFrameStyles(nextContext.doc);
+    const nextSignature = buildPageSignature(nextContext);
+    const shouldSyncRows = nextSignature !== state.pageSignature || reason === 'inline-action';
+    state.pageSignature = nextSignature;
 
-    const btnCustom = createActionButton(BTN_CUSTOM_ID, 'fa-hashtag', 'Carregar X páginas');
-    btnCustom.addEventListener('click', () => {
-      const raw = prompt('Quantas páginas deseja carregar?', '20');
-      if (raw === null) return;
-      const n = parseInt(String(raw).trim(), 10);
-      if (!Number.isFinite(n) || n < 1) {
-        alert('Informe um número inteiro maior que 0.');
+    ensureActionMenu();
+    updateActionMenuVisibility(nextContext);
+
+    if (shouldSyncRows) {
+      syncPageRows(nextContext);
+    }
+
+    if (state.modalOpen) {
+      renderModal();
+    }
+  }
+
+  /**
+   * Analisa o iframe com uma unica passada sobre as tabelas.
+   * @param {HTMLIFrameElement} frame
+   * @param {Document} doc
+   * @returns {{
+   *   doc: Document,
+   *   url: string,
+   *   title: string,
+   *   isIntimationPage: boolean,
+   *   mainTable: HTMLTableElement | null,
+   *   markTables: Array<{table: HTMLTableElement, headerMap: ReturnType<typeof createHeaderMap>, legend: string}>
+   * }}
+   */
+  function analyzeFrameContext(frame, doc) {
+    const title = normalizeSpaces(doc.querySelector(SELECTORS.title)?.textContent || '');
+    const url = safeRun('Falha ao ler URL do iframe.', () => frame.contentWindow?.location?.href || doc.location.href, '') || '';
+    const tables = Array.from(doc.querySelectorAll(SELECTORS.table));
+
+    let mainTable = null;
+    let mainScore = -1;
+    /** @type {Array<{table: HTMLTableElement, headerMap: ReturnType<typeof createHeaderMap>, legend: string}>} */
+    const markTables = [];
+
+    for (const candidate of tables) {
+      const table = /** @type {HTMLTableElement} */ (candidate);
+      const headerMap = createHeaderMap(table);
+      const score = scoreMainTable(table, headerMap);
+      if (score > mainScore) {
+        mainScore = score;
+        mainTable = table;
+      }
+
+      if (headerMap.intimationId >= 0 && headerMap.process >= 0 && headerMap.movement >= 0) {
+        const legend = normalizeSpaces(table.closest('fieldset')?.querySelector('legend')?.textContent || '');
+        if (isIntimationHint(title) || isIntimationHint(url) || isIntimationHint(legend)) {
+          table[PRIVATE.tableContext] = headerMap;
+          markTables.push({ table, headerMap, legend });
+        }
+      }
+    }
+
+    const isIntimationPage = Boolean(
+      (mainTable && mainScore > 0) ||
+        markTables.length ||
+        isIntimationHint(title) ||
+        /intimac/i.test(url)
+    );
+
+    return {
+      doc,
+      url,
+      title,
+      isIntimationPage,
+      mainTable,
+      markTables
+    };
+  }
+
+  /**
+   * Gera uma assinatura pequena da pagina para evitar trabalho repetido.
+   * @param {ReturnType<typeof analyzeFrameContext>} context
+   * @returns {string}
+   */
+  function buildPageSignature(context) {
+    const parts = [context.url, context.title, String(context.markTables.length)];
+    for (const entry of context.markTables) {
+      parts.push(String(entry.table.tBodies[0]?.rows.length || 0));
+      const firstDataRow = findFirstDataRow(entry.table);
+      parts.push(firstDataRow ? normalizeSpaces(firstDataRow.textContent || '').slice(0, 80) : '');
+    }
+    return parts.join('|');
+  }
+
+  /**
+   * Detecta primeiro tr com td.
+   * @param {HTMLTableElement} table
+   * @returns {HTMLTableRowElement | null}
+   */
+  function findFirstDataRow(table) {
+    for (const body of Array.from(table.tBodies)) {
+      for (const row of Array.from(body.rows)) {
+        if (row.querySelector('td')) return row;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Pontua a tabela principal de intimações.
+   * @param {HTMLTableElement} table
+   * @param {ReturnType<typeof createHeaderMap>} headerMap
+   * @returns {number}
+   */
+  function scoreMainTable(table, headerMap) {
+    let score = 0;
+    if (headerMap.intimationId >= 0) score += 2;
+    if (headerMap.process >= 0) score += 2;
+    if (headerMap.movement >= 0) score += 3;
+    if (headerMap.kind >= 0) score += 1;
+    if (headerMap.deadline >= 0) score += 2;
+    if (headerMap.baseDate >= 0) score += 2;
+    if (table.matches(SELECTORS.relevantTable)) score += 1;
+    return score;
+  }
+
+  /**
+   * Cria o mapa semantico de colunas com uma unica leitura de cabecalho.
+   * @param {HTMLTableElement} table
+   * @returns {{
+   *   intimationId: number,
+   *   process: number,
+   *   movement: number,
+   *   baseDate: number,
+   *   deadline: number,
+   *   mark: number,
+   *   details: number,
+   *   kind: number,
+   *   actionHost: number
+   * }}
+   */
+  function createHeaderMap(table) {
+    const headerCells = Array.from(
+      table.querySelectorAll('thead th').length
+        ? table.querySelectorAll('thead th')
+        : table.querySelectorAll('tr:first-child th, tr:first-child td')
+    );
+    const normalized = headerCells.map((cell) => normalizeText(cell.textContent || ''));
+
+    const findIndex = (...needles) => normalized.findIndex((value) => needles.some((needle) => value.includes(needle)));
+    const findLastIndex = (...needles) => {
+      for (let index = normalized.length - 1; index >= 0; index -= 1) {
+        if (needles.some((needle) => normalized[index].includes(needle))) return index;
+      }
+      return -1;
+    };
+
+    return {
+      intimationId: findIndex('num.', 'num', 'numero', 'número'),
+      process: findIndex('processo'),
+      movement: findIndex('movimentacao', 'movimentação'),
+      baseDate: findIndex('data leitura', 'data publicacao', 'data publicação'),
+      deadline: findIndex('possivel data limite', 'possível data limite', 'data limite'),
+      mark: findIndex('marcar'),
+      details: findIndex('detalhes'),
+      kind: findIndex('tipo'),
+      actionHost: findLastIndex('opcoes', 'opções', 'opcoes', 'marcar', 'descartar', 'detalhes')
+    };
+  }
+
+  /**
+   * Verifica se um texto parece ligado ao contexto de intimacoes.
+   * @param {string} value
+   * @returns {boolean}
+   */
+  function isIntimationHint(value) {
+    const text = normalizeText(value);
+    return text.includes('intimac') || text.includes('citac');
+  }
+
+  /**
+   * Atualiza as linhas com classes e acoes inline.
+   * @param {ReturnType<typeof analyzeFrameContext>} context
+   */
+  function syncPageRows(context) {
+    const markedIds = new Set(Object.keys(state.store.items));
+
+    for (const tableEntry of context.markTables) {
+      const { table, headerMap, legend } = tableEntry;
+      table.classList.add('pjip-table');
+
+      for (const body of Array.from(table.tBodies)) {
+        for (const row of Array.from(body.rows)) {
+          syncSingleRow(row, headerMap, legend, markedIds);
+        }
+      }
+    }
+  }
+
+  /**
+   * Atualiza uma linha individual.
+   * @param {HTMLTableRowElement} row
+   * @param {ReturnType<typeof createHeaderMap>} headerMap
+   * @param {string} legend
+   * @param {Set<string>} markedIds
+   */
+  function syncSingleRow(row, headerMap, legend, markedIds) {
+    const rowData = extractRowData(row, headerMap, legend);
+    if (!rowData) return;
+
+    if (state.store.items[rowData.id]) {
+      mergeObservedItem(rowData.id, rowData);
+    }
+
+    const item = state.store.items[rowData.id] || null;
+    row.classList.toggle('pjip-row--marked', Boolean(item));
+    row.classList.toggle('pjip-row--done', Boolean(item && item.done));
+    row.classList.toggle('pjip-row--hidden', Boolean(state.store.ui.onlyMarkedOnPage && !markedIds.has(rowData.id)));
+
+    const actionCellIndex = headerMap.actionHost >= 0 ? headerMap.actionHost : Math.max(headerMap.mark, headerMap.details, 0);
+    const actionCell = /** @type {HTMLTableCellElement | undefined} */ (row.children[actionCellIndex]);
+    if (!actionCell) return;
+
+    let host = actionCell.querySelector('.pjip-inline');
+    if (!host) {
+      host = row.ownerDocument.createElement('span');
+      host.className = 'pjip-inline';
+      actionCell.appendChild(host);
+    }
+
+    host.replaceChildren(
+      buildInlineButton(row.ownerDocument, 'toggle-mark', rowData.id, item ? '★' : '☆', item ? 'Remover das minhas intimacoes' : 'Marcar como minha'),
+      buildInlineButton(row.ownerDocument, 'toggle-done', rowData.id, '✓', item ? (item.done ? 'Reabrir intimacao' : 'Marcar como concluida') : 'Marque primeiro como sua', !item)
+    );
+  }
+
+  /**
+   * Cria um botao inline sem listener proprio.
+   * @param {Document} doc
+   * @param {string} action
+   * @param {string} itemId
+   * @param {string} label
+   * @param {string} title
+   * @param {boolean=} disabled
+   * @returns {HTMLButtonElement}
+   */
+  function buildInlineButton(doc, action, itemId, label, title, disabled = false) {
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'pjip-inline-btn';
+    button.dataset.pjipAction = action;
+    button.dataset.pjipId = itemId;
+    button.textContent = label;
+    button.title = title;
+    button.disabled = disabled;
+    return button;
+  }
+
+  /**
+   * Extrai os dados relevantes de uma linha da tabela.
+   * @param {HTMLTableRowElement} row
+   * @param {ReturnType<typeof createHeaderMap>} headerMap
+   * @param {string} legend
+   * @returns {{
+   *   id: string,
+   *   processNumber: string,
+   *   processLink: string,
+   *   movement: string,
+   *   kind: string,
+   *   observedAt: string,
+   *   deadline: string,
+   *   sourceLegend: string,
+   *   nativeMarkHref: string,
+   *   isNativeDone: boolean
+   * } | null}
+   */
+  function extractRowData(row, headerMap, legend) {
+    const cells = Array.from(row.children);
+    const id = getCellText(cells[headerMap.intimationId]);
+    const processNumber = getCellText(cells[headerMap.process]);
+    const movement = getCellText(cells[headerMap.movement]);
+
+    if (!id || !/^\d+$/.test(id) || !processNumber) return null;
+
+    const baseUrl = row.ownerDocument.location?.href || window.location.href;
+    const processElement = findNavigationElement(cells[headerMap.process], SELECTORS.processAction);
+    const nativeDoneElement =
+      headerMap.mark >= 0
+        ? findNavigationElement(cells[headerMap.mark], SELECTORS.nativeDoneAction)
+        : row.querySelector(SELECTORS.nativeDoneAction);
+    const processLink = extractNavigableUrl(processElement, baseUrl);
+    const nativeMarkHref = extractNavigableUrl(nativeDoneElement, baseUrl);
+
+    return {
+      id,
+      processNumber,
+      processLink,
+      movement,
+      kind: headerMap.kind >= 0 ? getCellText(cells[headerMap.kind]) : 'Intimacao',
+      observedAt: headerMap.baseDate >= 0 ? getCellText(cells[headerMap.baseDate]) : '',
+      deadline: headerMap.deadline >= 0 ? getCellText(cells[headerMap.deadline]) : '',
+      sourceLegend: legend,
+      nativeMarkHref,
+      isNativeDone: /finalizada=true/i.test(nativeMarkHref)
+    };
+  }
+
+  /**
+   * Reage aos botoes inline das linhas.
+   * @param {Element} actionButton
+   */
+  function handleInlineAction(actionButton) {
+    const action = actionButton.dataset.pjipAction || '';
+    const itemId = actionButton.dataset.pjipId || '';
+    if (!action || !itemId) return;
+
+    if (action === 'toggle-done') {
+      toggleDone(itemId);
+      return;
+    }
+
+    if (action === 'toggle-mark') {
+      const row = actionButton.closest('tr');
+      const table = row?.closest('table');
+      const headerMap = table?.[PRIVATE.tableContext];
+      const legend = normalizeSpaces(table?.closest('fieldset')?.querySelector('legend')?.textContent || '');
+      if (!row || !headerMap) return;
+
+      const rowData = extractRowData(/** @type {HTMLTableRowElement} */ (row), headerMap, legend);
+      if (!rowData) return;
+      toggleMarked(rowData);
+    }
+  }
+
+  /**
+   * Marca ou desmarca uma intimacao.
+   * @param {NonNullable<ReturnType<typeof extractRowData>>} rowData
+   */
+  function toggleMarked(rowData) {
+    if (state.store.items[rowData.id]) {
+      delete state.store.items[rowData.id];
+    } else {
+      state.store.items[rowData.id] = {
+        id: rowData.id,
+        processNumber: rowData.processNumber,
+        processLink: rowData.processLink,
+        movement: rowData.movement,
+        kind: rowData.kind,
+        observedAt: rowData.observedAt,
+        deadline: rowData.deadline,
+        sourceLegend: rowData.sourceLegend,
+        nativeMarkHref: rowData.nativeMarkHref,
+        nativeDone: Boolean(rowData.isNativeDone),
+        done: Boolean(rowData.isNativeDone),
+        updatedAt: new Date().toISOString()
+      };
+    }
+
+    persistStore();
+    refreshFrameContext('inline-action');
+  }
+
+  /**
+   * Alterna o estado de concluida.
+   * @param {string} itemId
+   */
+  function toggleDone(itemId) {
+    const item = state.store.items[itemId];
+    if (!item) return;
+    item.done = !item.done;
+    item.updatedAt = new Date().toISOString();
+    persistStore();
+    refreshFrameContext('inline-action');
+  }
+
+  /**
+   * Mescla os dados observados em uma linha com o armazenamento local.
+   * @param {string} itemId
+   * @param {NonNullable<ReturnType<typeof extractRowData>>} rowData
+   */
+  function mergeObservedItem(itemId, rowData) {
+    const item = state.store.items[itemId];
+    if (!item) return;
+    item.processNumber = rowData.processNumber || item.processNumber;
+    item.processLink = rowData.processLink || item.processLink;
+    item.movement = rowData.movement || item.movement;
+    item.kind = rowData.kind || item.kind;
+    item.observedAt = rowData.observedAt || item.observedAt;
+    item.deadline = rowData.deadline || item.deadline;
+    item.sourceLegend = rowData.sourceLegend || item.sourceLegend;
+    item.nativeMarkHref = rowData.nativeMarkHref || item.nativeMarkHref;
+    item.nativeDone = Boolean(rowData.isNativeDone);
+  }
+
+  /**
+   * Le o armazenamento local.
+   * @returns {{items: Record<string, any>, ui: {panelOpen: boolean, hideDone: boolean, onlyMarkedOnPage: boolean, query: string}}}
+   */
+  function loadStore() {
+    const fallback = {
+      items: Object.create(null),
+      ui: {
+        panelOpen: false,
+        hideDone: true,
+        onlyMarkedOnPage: false,
+        query: ''
+      }
+    };
+
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.store);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return fallback;
+      return {
+        items: parsed.items && typeof parsed.items === 'object' ? parsed.items : Object.create(null),
+        ui: {
+          panelOpen: Boolean(parsed.ui?.panelOpen),
+          hideDone: parsed.ui?.hideDone !== false,
+          onlyMarkedOnPage: Boolean(parsed.ui?.onlyMarkedOnPage),
+          query: typeof parsed.ui?.query === 'string' ? parsed.ui.query : ''
+        }
+      };
+    } catch (error) {
+      logWarn('Falha ao carregar dados locais. O armazenamento sera reiniciado.', error);
+      return fallback;
+    }
+  }
+
+  /**
+   * Persiste o armazenamento local e agenda backup, se configurado.
+   */
+  function persistStore() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.store, JSON.stringify(state.store));
+    } catch (error) {
+      logError('Falha ao salvar dados locais.', error);
+    }
+    scheduleAutoBackup();
+  }
+
+  /**
+   * Normaliza configuracoes de backup.
+   * @param {Partial<typeof BACKUP_DEFAULTS>=} value
+   * @returns {typeof BACKUP_DEFAULTS}
+   */
+  function normalizeBackupSettings(value) {
+    return {
+      enabled: Boolean(value?.enabled),
+      gistId: String(value?.gistId || '').trim(),
+      token: String(value?.token || '').trim(),
+      fileName: String(value?.fileName || BACKUP_DEFAULTS.fileName).trim() || BACKUP_DEFAULTS.fileName,
+      autoBackupOnSave: Boolean(value?.autoBackupOnSave),
+      lastBackupAt: String(value?.lastBackupAt || '').trim(),
+      lastBackupSignature: String(value?.lastBackupSignature || '').trim()
+    };
+  }
+
+  /**
+   * Le configuracoes de backup.
+   * @returns {typeof BACKUP_DEFAULTS}
+   */
+  function loadBackupSettings() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.backup);
+      return raw ? normalizeBackupSettings(JSON.parse(raw)) : normalizeBackupSettings(BACKUP_DEFAULTS);
+    } catch (error) {
+      logWarn('Falha ao carregar configuracoes de backup.', error);
+      return normalizeBackupSettings(BACKUP_DEFAULTS);
+    }
+  }
+
+  /**
+   * Salva configuracoes de backup.
+   * @param {Partial<typeof BACKUP_DEFAULTS>} settings
+   * @returns {typeof BACKUP_DEFAULTS}
+   */
+  function saveBackupSettings(settings) {
+    const normalized = normalizeBackupSettings(settings);
+    try {
+      localStorage.setItem(STORAGE_KEYS.backup, JSON.stringify(normalized));
+    } catch (error) {
+      logError('Falha ao salvar configuracoes de backup.', error);
+    }
+    return normalized;
+  }
+
+  /**
+   * Agenda backup remoto apenas quando o conteudo mudou.
+   */
+  function scheduleAutoBackup() {
+    window.clearTimeout(state.backupTimer);
+    state.backupTimer = 0;
+
+    const settings = loadBackupSettings();
+    if (!settings.enabled || !settings.autoBackupOnSave) return;
+
+    const signature = JSON.stringify(state.store.items);
+    if (signature === settings.lastBackupSignature) return;
+
+    state.backupTimer = window.setTimeout(async () => {
+      try {
+        await pushBackupToGist(settings, buildBackupPayload());
+        saveBackupSettings({
+          ...settings,
+          lastBackupAt: new Date().toISOString(),
+          lastBackupSignature: signature
+        });
+        if (state.modalOpen) renderModal();
+      } catch (error) {
+        logWarn('Falha no backup automatico.', error);
+      }
+    }, 700);
+  }
+
+  /**
+   * Monta o payload de backup.
+   * @returns {{schema: string, scriptId: string, scriptName: string, version: string, exportedAt: string, items: Record<string, any>}}
+   */
+  function buildBackupPayload() {
+    return {
+      schema: 'backup-v1',
+      scriptId: 'projudi-intimacao-page',
+      scriptName: SCRIPT_NAME,
+      version: SCRIPT_VERSION,
+      exportedAt: new Date().toISOString(),
+      items: state.store.items
+    };
+  }
+
+  /**
+   * Faz requisicao ao GitHub via API do userscript.
+   * @param {{method?: string, url: string, headers?: Record<string, string>, data?: string}} options
+   * @returns {Promise<any>}
+   */
+  function githubRequest(options) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest nao esta disponivel.'));
         return;
       }
-      unifyInsideIframe(ifr, btnCustom, n);
+
+      GM_xmlhttpRequest({
+        method: options.method || 'GET',
+        url: options.url,
+        headers: options.headers || {},
+        data: options.data,
+        onload: resolve,
+        onerror: () => reject(new Error('Falha de rede ao acessar o GitHub.')),
+        ontimeout: () => reject(new Error('Tempo esgotado ao acessar o GitHub.'))
+      });
     });
+  }
+
+  /**
+   * Extrai mensagem amigavel de erro do GitHub.
+   * @param {{status: number, responseText?: string}} response
+   * @returns {string}
+   */
+  function parseGithubError(response) {
+    try {
+      const parsed = JSON.parse(response.responseText || '{}');
+      if (parsed && parsed.message) return String(parsed.message);
+    } catch (_) {}
+    return `GitHub respondeu com status ${response.status}.`;
+  }
+
+  /**
+   * Envia backup para um Gist.
+   * @param {typeof BACKUP_DEFAULTS} settings
+   * @param {ReturnType<typeof buildBackupPayload>} payload
+   * @returns {Promise<any>}
+   */
+  async function pushBackupToGist(settings, payload) {
+    if (!settings.gistId) throw new Error('Informe o Gist ID.');
+    if (!settings.token) throw new Error('Informe o token do GitHub.');
+
+    const response = await githubRequest({
+      method: 'PATCH',
+      url: `https://api.github.com/gists/${encodeURIComponent(settings.gistId)}`,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${settings.token}`,
+        'Content-Type': 'application/json'
+      },
+      data: JSON.stringify({
+        files: {
+          [settings.fileName]: {
+            content: JSON.stringify(payload, null, 2)
+          }
+        }
+      })
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(parseGithubError(response));
+    }
+
+    return JSON.parse(response.responseText || '{}');
+  }
+
+  /**
+   * Restaura backup a partir de um Gist.
+   * @param {typeof BACKUP_DEFAULTS} settings
+   * @returns {Promise<any>}
+   */
+  async function readBackupFromGist(settings) {
+    if (!settings.gistId) throw new Error('Informe o Gist ID.');
+    if (!settings.token) throw new Error('Informe o token do GitHub.');
+
+    const response = await githubRequest({
+      method: 'GET',
+      url: `https://api.github.com/gists/${encodeURIComponent(settings.gistId)}`,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${settings.token}`
+      }
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(parseGithubError(response));
+    }
+
+    const gist = JSON.parse(response.responseText || '{}');
+    const file = gist?.files?.[settings.fileName];
+    if (!file?.content) throw new Error('Arquivo de backup nao encontrado no Gist.');
+    return JSON.parse(file.content);
+  }
+
+  /**
+   * Registra ou atualiza o menu do Tampermonkey.
+   */
+  function registerMenuCommand() {
+    if (typeof GM_registerMenuCommand !== 'function') return;
+
+    if (state.menuCommandId !== null && typeof GM_unregisterMenuCommand === 'function') {
+      safeRun('Falha ao remover comando anterior do menu.', () => {
+        GM_unregisterMenuCommand(state.menuCommandId);
+      });
+    }
+
+    state.menuCommandId = GM_registerMenuCommand('Gerenciar intimacoes', () => {
+      openModal();
+    });
+  }
+
+  /**
+   * Injeta estilos da pagina host uma unica vez.
+   */
+  function injectHostStyles() {
+    if (document.getElementById(IDS.hostStyle)) return;
+
+    const style = document.createElement('style');
+    style.id = IDS.hostStyle;
+    style.textContent = `
+      #${IDS.hostRoot} {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        font-family: Arial, sans-serif;
+      }
+      .pjip-hidden {
+        display: none !important;
+      }
+      .pjip-actions-panel {
+        width: 260px;
+        border: 1px solid #d4dceb;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 14px 28px rgba(15, 36, 62, 0.18);
+        overflow: hidden;
+        opacity: 0;
+        transform: translateY(8px) scale(.98);
+        pointer-events: none;
+        transition: opacity .15s ease, transform .15s ease;
+      }
+      .pjip-actions-panel[data-open="true"] {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+      .pjip-actions-head {
+        padding: 10px 12px;
+        background: linear-gradient(180deg, #2f72b8 0%, #2b69aa 100%);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .pjip-actions-body {
+        display: grid;
+        gap: 4px;
+        padding: 6px;
+        background: #f7f9fc;
+      }
+      .pjip-actions-divider {
+        height: 1px;
+        margin: 2px 0;
+        background: #dde4ef;
+      }
+      .pjip-action-btn,
+      .pjip-modal-btn,
+      .pjip-inline-btn {
+        appearance: none;
+        border: 1px solid #cbd8e8;
+        border-radius: 8px;
+        background: #fff;
+        color: #173a61;
+        cursor: pointer;
+        font: inherit;
+      }
+      .pjip-action-btn {
+        min-height: 32px;
+        padding: 0 10px;
+        text-align: left;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .pjip-action-btn:hover,
+      .pjip-modal-btn:hover,
+      .pjip-inline-btn:hover {
+        background: #edf4fc;
+        border-color: #9fbbe0;
+      }
+      .pjip-fab {
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        border: 1px solid #2b69aa;
+        background: #2b69aa;
+        color: #fff;
+        cursor: pointer;
+        font-size: 20px;
+        line-height: 1;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+      }
+      .pjip-fab:hover {
+        background: #245a92;
+      }
+      #${IDS.toast} {
+        position: fixed;
+        right: 16px;
+        bottom: 66px;
+        z-index: 2147483647;
+        padding: 8px 11px;
+        border-radius: 6px;
+        border: 1px solid #2b69aa;
+        background: #2b69aa;
+        color: #fff;
+        font: 600 12px Arial, sans-serif;
+        box-shadow: 0 4px 12px rgba(0,0,0,.18);
+        opacity: 0;
+        transition: opacity .2s ease;
+      }
+      #${IDS.modalOverlay} {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(8, 28, 52, .28);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        font-family: Arial, sans-serif;
+      }
+      #${IDS.modalOverlay}[data-open="true"] {
+        display: flex;
+      }
+      #${IDS.modalPanel} {
+        width: min(860px, calc(100vw - 48px));
+        max-height: min(82vh, 860px);
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        border: 1px solid #cfdaea;
+        border-radius: 16px;
+        box-shadow: 0 22px 48px rgba(8, 32, 61, .22);
+        overflow: hidden;
+      }
+      .pjip-modal-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 16px 12px;
+        color: #fff;
+        background: linear-gradient(180deg, #2f72b8 0%, #245f9d 100%);
+      }
+      .pjip-modal-title {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .pjip-modal-subtitle {
+        margin-top: 4px;
+        font-size: 13px;
+        opacity: .92;
+      }
+      .pjip-modal-close {
+        width: 38px;
+        min-width: 38px;
+        height: 38px;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(255,255,255,.18);
+        color: #fff;
+        cursor: pointer;
+        font-size: 22px;
+      }
+      .pjip-modal-close:hover {
+        background: rgba(255,255,255,.26);
+      }
+      .pjip-modal-body {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        overflow: auto;
+        background: #f7f9fc;
+      }
+      .pjip-toolbar,
+      .pjip-backup,
+      .pjip-item {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid #d6e0ef;
+        border-radius: 14px;
+        background: #fff;
+      }
+      .pjip-toolbar input[type="search"],
+      .pjip-backup input[type="text"],
+      .pjip-backup input[type="password"] {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 1px solid #c9d6e9;
+        border-radius: 10px;
+        padding: 9px 10px;
+        font: inherit;
+      }
+      .pjip-checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 14px;
+        color: #375272;
+      }
+      .pjip-checks label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+      }
+      .pjip-toolbar-meta,
+      .pjip-backup-meta {
+        font-size: 12px;
+        color: #61748d;
+      }
+      .pjip-backup-actions,
+      .pjip-item-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .pjip-modal-btn {
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .pjip-modal-btn--primary {
+        border-color: #1f69d5;
+        background: #1f69d5;
+        color: #fff;
+      }
+      .pjip-item--done {
+        opacity: .78;
+      }
+      .pjip-item-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .pjip-item-id {
+        font-size: 21px;
+        font-weight: 700;
+        color: #164172;
+      }
+      .pjip-item-status {
+        border-radius: 999px;
+        padding: 4px 8px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #2d506f;
+        background: #e8eff8;
+      }
+      .pjip-item-status--done {
+        color: #18663a;
+        background: #dff3e5;
+      }
+      .pjip-item-status--late {
+        color: #8f2525;
+        background: #ffe1e1;
+      }
+      .pjip-item-status--soon {
+        color: #805400;
+        background: #fff0c7;
+      }
+      .pjip-item-grid {
+        display: grid;
+        gap: 6px;
+        color: #20364f;
+        font-size: 13px;
+      }
+      .pjip-item-grid strong {
+        color: #4f6783;
+      }
+      .pjip-empty {
+        padding: 18px;
+        border: 1px dashed #cad7ea;
+        border-radius: 14px;
+        background: #fff;
+        color: #5c718b;
+        text-align: center;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Injeta estilos no iframe apenas quando ele esta em contexto relevante.
+   * @param {Document} doc
+   */
+  function injectFrameStyles(doc) {
+    if (doc.getElementById(IDS.frameStyle)) return;
+
+    const style = doc.createElement('style');
+    style.id = IDS.frameStyle;
+    style.textContent = `
+      .pjip-table {
+        width: 100% !important;
+        margin-right: 0 !important;
+      }
+      .pjip-table tbody tr td {
+        padding-top: 1px !important;
+        padding-bottom: 1px !important;
+        line-height: 1.15 !important;
+      }
+      .pjip-row--marked {
+        background: linear-gradient(90deg, rgba(70, 141, 255, 0.16), rgba(70, 141, 255, 0.04)) !important;
+      }
+      .pjip-row--marked td:first-child,
+      .pjip-row--marked td:nth-child(2) {
+        box-shadow: inset 4px 0 0 #2f7ae5;
+      }
+      .pjip-row--done {
+        background: linear-gradient(90deg, rgba(72, 178, 115, 0.18), rgba(72, 178, 115, 0.05)) !important;
+      }
+      .pjip-row--hidden {
+        display: none !important;
+      }
+      .pjip-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: 4px;
+        white-space: nowrap;
+      }
+      .pjip-inline-btn {
+        min-width: 22px;
+        height: 22px;
+        padding: 0 5px;
+        border-radius: 8px;
+        font-size: 14px;
+        line-height: 1;
+      }
+      .pjip-inline-btn[disabled] {
+        opacity: .4;
+        cursor: default;
+      }
+      .pjip-inline-btn[disabled]:hover {
+        background: #fff;
+        border-color: #cbd8e8;
+      }
+    `;
+
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+
+  /**
+   * Garante a existencia do menu de acoes flutuante.
+   */
+  function ensureActionMenu() {
+    if (document.getElementById(IDS.hostRoot)) return;
+
+    const root = document.createElement('div');
+    root.id = IDS.hostRoot;
+
+    const panel = document.createElement('div');
+    panel.id = IDS.actionsPanel;
+    panel.className = 'pjip-actions-panel';
+    panel.dataset.open = 'false';
+
+    const head = document.createElement('div');
+    head.className = 'pjip-actions-head';
+    head.textContent = 'Acoes de Intimacoes';
+
+    const body = document.createElement('div');
+    body.className = 'pjip-actions-body';
+
+    body.appendChild(buildMenuButton('Carregar todas as paginas', () => unifyPages(null)));
+    body.appendChild(buildMenuButton('Carregar 10 paginas', () => unifyPages(10)));
+    body.appendChild(
+      buildMenuButton('Carregar X paginas', () => {
+        const raw = window.prompt('Quantas paginas deseja carregar?', '20');
+        if (raw === null) return;
+        const amount = Number.parseInt(String(raw).trim(), 10);
+        if (!Number.isFinite(amount) || amount < 1) {
+          window.alert('Informe um numero inteiro maior que 0.');
+          return;
+        }
+        unifyPages(amount);
+      })
+    );
 
     const divider = document.createElement('div');
-    Object.assign(divider.style, {
-      height: '1px',
-      background: '#dde5f0',
-      margin: '1px 0'
-    });
+    divider.className = 'pjip-actions-divider';
+    body.appendChild(divider);
+    body.appendChild(buildMenuButton('Exportar CSV', () => exportCSV()));
+    body.appendChild(buildMenuButton('Exportar PDF', () => exportPDF()));
+    body.appendChild(buildMenuButton('Minhas intimacoes', () => openModal()));
 
-    const btnCsv = createActionButton(BTN_CSV_ID, 'fa-file-csv', 'Exportar CSV');
-    btnCsv.addEventListener('click', () => exportCSV(ifr));
-
-    const btnPdf = createActionButton(BTN_PDF_ID, 'fa-file-pdf', 'Exportar PDF');
-    btnPdf.addEventListener('click', () => exportPDF(ifr));
-
-    content.append(btnAll, btn10, btnCustom, divider, btnCsv, btnPdf);
-    panel.append(header, content);
+    panel.append(head, body);
 
     const fab = document.createElement('button');
-    fab.id = FAB_ID;
+    fab.id = IDS.actionsFab;
+    fab.className = 'pjip-fab';
     fab.type = 'button';
-    fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
-    fab.setAttribute('aria-label', 'Abrir menu de ações');
-    Object.assign(fab.style, {
-      width: `${UI.fabSize}px`,
-      height: `${UI.fabSize}px`,
-      borderRadius: '50%',
-      border: `1px solid ${UI.brand}`,
-      background: UI.brand,
-      color: '#fff',
-      cursor: 'pointer',
-      fontSize: '14px',
-      boxShadow: '0 4px 12px rgba(0,0,0,.2)',
-      transition: 'transform .12s ease, background .12s ease'
+    fab.textContent = '+';
+    fab.setAttribute('aria-label', 'Abrir acoes de intimacoes');
+    fab.addEventListener('click', () => {
+      state.menuOpen = !state.menuOpen;
+      updateActionPanelState();
     });
-
-    fab.addEventListener('mouseenter', () => {
-      fab.style.background = UI.brandHover;
-      fab.style.transform = 'translateY(-1px)';
-    });
-
-    fab.addEventListener('mouseleave', () => {
-      fab.style.background = UI.brand;
-      fab.style.transform = 'translateY(0)';
-    });
-
-    let isOpen = false;
-    const setOpen = (open) => {
-      isOpen = open;
-      if (isOpen) {
-        panel.style.opacity = '1';
-        panel.style.transform = 'translateY(0) scale(1)';
-        panel.style.pointerEvents = 'auto';
-        fab.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-      } else {
-        panel.style.opacity = '0';
-        panel.style.transform = 'translateY(8px) scale(.98)';
-        panel.style.pointerEvents = 'none';
-        fab.innerHTML = '<i class="fa-solid fa-plus"></i>';
-      }
-    };
-
-    fab.addEventListener('click', (e) => {
-      e.stopPropagation();
-      setOpen(!isOpen);
-    });
-
-    outsideClickHandler = (e) => {
-      if (!root.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener('click', outsideClickHandler, true);
-
-    keydownHandler = (e) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('keydown', keydownHandler, true);
 
     root.append(panel, fab);
     document.body.appendChild(root);
   }
 
-  function createActionButton(id, iconClass, label) {
-    const btn = document.createElement('button');
-    btn.id = id;
-    btn.type = 'button';
-    btn.innerHTML = `<i class="fa-solid ${iconClass}" style="width:15px;text-align:center;"></i><span>${label}</span>`;
-
-    Object.assign(btn.style, {
-      width: '100%',
-      height: '30px',
-      padding: '0 10px',
-      background: '#fff',
-      color: UI.textStrong,
-      border: '1px solid #cfdae8',
-      borderRadius: '6px',
-      fontWeight: '600',
-      cursor: 'pointer',
-      fontSize: '13px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'flex-start',
-      gap: '7px',
-      transition: 'transform .12s ease, border-color .12s ease, background .12s ease'
-    });
-
-    btn.addEventListener('mouseenter', () => {
-      btn.style.background = '#edf4fc';
-      btn.style.borderColor = '#9ebce0';
-      btn.style.transform = 'translateY(-1px)';
-    });
-
-    btn.addEventListener('mouseleave', () => {
-      btn.style.background = '#fff';
-      btn.style.borderColor = '#cfdae8';
-      btn.style.transform = 'translateY(0)';
-    });
-
-    return btn;
+  /**
+   * Remove o menu flutuante quando a pagina deixa de ser relevante.
+   */
+  function teardownActionMenu() {
+    state.menuOpen = false;
+    document.getElementById(IDS.hostRoot)?.remove();
   }
 
-  function showToast(msg) {
-    const t = document.createElement('div');
-    Object.assign(t.style, {
-      position: 'fixed',
-      right: '16px',
-      bottom: '64px',
-      background: UI.brand,
-      color: '#fff',
-      padding: '8px 11px',
-      borderRadius: '4px',
-      border: `1px solid ${UI.brand}`,
-      boxShadow: '0 3px 10px rgba(0,0,0,.2)',
-      zIndex: '2147483647',
-      fontWeight: '600',
-      fontSize: '12px',
-      opacity: '0',
-      transition: 'opacity .25s'
-    });
-    t.textContent = msg;
-    document.body.appendChild(t);
-    requestAnimationFrame(() => (t.style.opacity = '1'));
-    setTimeout(() => {
-      t.style.opacity = '0';
-      setTimeout(() => t.remove(), 250);
+  /**
+   * Atualiza visibilidade do menu flutuante.
+   * @param {ReturnType<typeof analyzeFrameContext>} context
+   */
+  function updateActionMenuVisibility(context) {
+    const root = document.getElementById(IDS.hostRoot);
+    if (!root) return;
+    root.classList.toggle('pjip-hidden', !context.isIntimationPage);
+    updateActionPanelState();
+  }
+
+  /**
+   * Atualiza o estado visual do painel flutuante.
+   */
+  function updateActionPanelState() {
+    const panel = document.getElementById(IDS.actionsPanel);
+    const fab = document.getElementById(IDS.actionsFab);
+    if (!panel || !fab) return;
+    panel.dataset.open = state.menuOpen ? 'true' : 'false';
+    fab.textContent = state.menuOpen ? '×' : '+';
+  }
+
+  /**
+   * Cria botao do menu principal.
+   * @param {string} label
+   * @param {() => void} onClick
+   * @returns {HTMLButtonElement}
+   */
+  function buildMenuButton(label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'pjip-action-btn';
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  /**
+   * Mostra notificacao pequena e temporaria.
+   * @param {string} message
+   */
+  function showToast(message) {
+    let toast = document.getElementById(IDS.toast);
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = IDS.toast;
+      document.body.appendChild(toast);
+    }
+
+    toast.textContent = message;
+    toast.style.opacity = '1';
+    window.clearTimeout(state.toastTimer);
+    state.toastTimer = window.setTimeout(() => {
+      if (toast) toast.style.opacity = '0';
     }, 1800);
   }
 
-  async function unifyInsideIframe(mainFrame, btn, maxPages = null) {
-    const d = safeRun('Falha ao acessar o documento do iframe.', () => mainFrame.contentDocument, null);
-    if (!d) return;
-    const originalLabel = btn.querySelector('span')?.textContent || btn.textContent;
-    const icon = btn.querySelector('i')?.outerHTML || '';
-    const setMsg = (m) => {
-      btn.innerHTML = `${icon}<span>${m}</span>`;
-    };
-    btn.disabled = true;
+  /**
+   * Unifica multiplas paginas em uma so usando um iframe temporario e polling local.
+   * @param {number | null} maxPages
+   */
+  async function unifyPages(maxPages) {
+    const context = state.pageContext;
+    if (!context?.mainTable || !state.frame) {
+      window.alert('Tabela principal nao encontrada.');
+      return;
+    }
+
+    const button = /** @type {HTMLButtonElement | null} */ (document.activeElement instanceof HTMLButtonElement ? document.activeElement : null);
+    const originalText = button?.textContent || '';
+    setBusyButtonLabel(button, 'Carregando...');
 
     try {
-      const table = findMainTable(d);
-      if (!table) throw new Error('Tabela principal não encontrada.');
-      const tbody = table.tBodies[0] || table;
+      const mainDoc = context.doc;
+      const mainTable = context.mainTable;
+      const targetBody = mainTable.tBodies[0] || mainTable;
+      const pager = mainDoc.querySelector(SELECTORS.pager);
+      const pagerInfo = analyzePager(mainDoc, pager);
 
-      const pager = d.getElementById('Paginacao') || findPagerFallback(d);
-      const pageInfo = analyzePager(d, pager);
-      if (!pageInfo || pageInfo.totalPages < 2) {
-        alert('Sem paginação.');
+      if (!pagerInfo || pagerInfo.totalPages < 2) {
+        window.alert('Sem paginacao disponivel.');
         return;
       }
 
-      const loader = d.createElement('iframe');
+      const loader = document.createElement('iframe');
       loader.style.display = 'none';
-      mainFrame.parentElement.appendChild(loader);
+      state.frame.parentElement?.appendChild(loader);
 
-      loader.src = mainFrame.contentWindow.location.href;
-      await once(loader, 'load');
+      try {
+        loader.src = state.frame.contentWindow?.location?.href || context.url;
+        await waitForFrameLoad(loader);
 
-      const total = pageInfo.totalPages;
-      const toPage = maxPages ? Math.min(maxPages, total) : total;
+        const targetPage = maxPages ? Math.min(maxPages, pagerInfo.totalPages) : pagerInfo.totalPages;
+        if (targetPage <= 1) return;
 
-      if (toPage <= 1) {
-        setMsg('Nada para carregar');
+        for (let currentPage = 2; currentPage <= targetPage; currentPage += 1) {
+          setBusyButtonLabel(button, `Pagina ${currentPage}/${targetPage}...`);
+          await navigateLoaderToPage(loader, currentPage, pagerInfo);
+
+          const loaderDoc = loader.contentDocument;
+          if (!loaderDoc) continue;
+          const nextTable = findBestMainTable(loaderDoc);
+          if (!nextTable) continue;
+
+          const rows = Array.from(nextTable.querySelectorAll('tbody tr')).filter((row) => row.querySelector('td'));
+          for (const row of rows) {
+            targetBody.appendChild(mainDoc.importNode(row, true));
+          }
+        }
+
+        if (!maxPages || targetPage === pagerInfo.totalPages) {
+          pager?.remove();
+        }
+
+        showToast('Paginas reunidas com sucesso');
+        refreshFrameContext('unify-pages');
+      } finally {
+        loader.remove();
+      }
+    } catch (error) {
+      logError('Falha ao unificar as paginas de intimacoes.', error);
+      window.alert('Nao foi possivel unificar as paginas.');
+    } finally {
+      restoreBusyButton(button, originalText);
+    }
+  }
+
+  /**
+   * Ajusta estado visual de um botao durante operacao.
+   * @param {HTMLButtonElement | null} button
+   * @param {string} text
+   */
+  function setBusyButtonLabel(button, text) {
+    if (!button) return;
+    button.disabled = true;
+    button.textContent = text;
+  }
+
+  /**
+   * Restaura o botao ao estado normal.
+   * @param {HTMLButtonElement | null} button
+   * @param {string} originalText
+   */
+  function restoreBusyButton(button, originalText) {
+    if (!button) return;
+    button.disabled = false;
+    if (originalText) button.textContent = originalText;
+  }
+
+  /**
+   * Analisa o paginador.
+   * @param {Document} doc
+   * @param {Element | null} pagerElement
+   * @returns {{totalPages: number, canCallBuscaDados: boolean, inputSelector: string | null, buttonSelector: string | null, pageSize: number | null} | null}
+   */
+  function analyzePager(doc, pagerElement) {
+    if (!pagerElement) return null;
+
+    const input = pagerElement.querySelector('#CaixaTextoPosicionar, .CaixaTextoPosicionar, input[type="text"], input[type="number"]');
+    let totalPages = input ? Number.parseInt(String(input.value || input.getAttribute('value') || '').trim(), 10) : Number.NaN;
+
+    if (!Number.isFinite(totalPages) || totalPages < 2) {
+      const links = Array.from(pagerElement.querySelectorAll('a'));
+      const lastLink = links.find((link) => /ultima|última/i.test(link.textContent || ''));
+      const extracted = lastLink ? extractLastNumber(lastLink.getAttribute('href')) : null;
+      if (typeof extracted === 'number') totalPages = extracted + 1;
+    }
+
+    if (!Number.isFinite(totalPages) || totalPages < 2) return null;
+
+    const goButton = pagerElement.querySelector('.BotaoIr, input[value="Ir"], button');
+
+    return {
+      totalPages,
+      canCallBuscaDados: typeof doc.defaultView?.buscaDados === 'function',
+      inputSelector: input ? buildCssPath(input) : null,
+      buttonSelector: goButton ? buildCssPath(goButton) : null,
+      pageSize: extractSecondNumberFromPager(pagerElement)
+    };
+  }
+
+  /**
+   * Navega o iframe temporario ate uma pagina alvo.
+   * @param {HTMLIFrameElement} loader
+   * @param {number} pageNumber
+   * @param {NonNullable<ReturnType<typeof analyzePager>>} pagerInfo
+   */
+  async function navigateLoaderToPage(loader, pageNumber, pagerInfo) {
+    const loaderDoc = loader.contentDocument;
+    const loaderWin = loader.contentWindow;
+    if (!loaderDoc || !loaderWin) throw new Error('Iframe temporario indisponivel.');
+
+    const currentTable = findBestMainTable(loaderDoc);
+    const previousSignature = captureTableSnapshot(currentTable);
+
+    if (pagerInfo.canCallBuscaDados && typeof loaderWin.buscaDados === 'function') {
+      loaderWin.buscaDados(pageNumber - 1, pagerInfo.pageSize || 15);
+      await waitForTableChange(loaderDoc, previousSignature);
+      return;
+    }
+
+    if (pagerInfo.inputSelector && pagerInfo.buttonSelector) {
+      const input = loaderDoc.querySelector(pagerInfo.inputSelector);
+      const button = loaderDoc.querySelector(pagerInfo.buttonSelector);
+      if (input && button) {
+        input.value = String(pageNumber);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof button.click === 'function') button.click();
+        await waitForTableChange(loaderDoc, previousSignature);
         return;
       }
-
-      for (let p = 2; p <= toPage; p++) {
-        setMsg(`Página ${p}/${toPage}...`);
-        await navigateLoaderToPage(loader, p, pageInfo);
-        const doc = loader.contentDocument;
-        const t2 = findMainTable(doc);
-        if (!t2) continue;
-        const rows = Array.from(t2.querySelectorAll('tbody tr, tr')).filter((tr) => tr.querySelector('td'));
-        for (const tr of rows) tbody.appendChild(d.importNode(tr, true));
-      }
-
-      const totalRows = tbody.querySelectorAll('tr').length;
-      if (!maxPages || toPage === total) {
-        pager?.remove?.();
-        setMsg(`Concluído (${totalRows} linhas)`);
-      } else {
-        setMsg(`${toPage} páginas (${totalRows} linhas)`);
-      }
-    } catch (err) {
-      logError('Erro ao unificar páginas de intimações.', err);
-      setMsg('Erro');
-    } finally {
-      setTimeout(() => {
-        btn.disabled = false;
-        btn.innerHTML = `${icon}<span>${originalLabel}</span>`;
-      }, 1800);
     }
-  }
 
-  function exportCSV(ifr) {
-    const d = ifr.contentDocument;
-    const table = findMainTable(d);
-    if (!table) {
-      alert('Tabela não encontrada para exportação.');
+    const link = Array.from(loaderDoc.querySelectorAll(`${SELECTORS.pager} a, a`)).find(
+      (anchor) => Number.parseInt(String(anchor.textContent || '').trim(), 10) === pageNumber
+    );
+    if (link) {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await waitForTableChange(loaderDoc, previousSignature);
       return;
     }
 
-    const delimiter = ';';
-    const rows = [];
-    const pushRow = (cells) => rows.push(cells.map(cleanCSV).join(delimiter));
-
-    const ths = Array.from((table.tHead || table).querySelectorAll('th')).map((th) => th.innerText.trim());
-    if (ths.length) pushRow(ths);
-
-    const trs = Array.from(table.querySelectorAll('tbody tr'));
-    for (const tr of trs) {
-      const tds = Array.from(tr.querySelectorAll('td')).map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim());
-      if (tds.length) pushRow(tds);
-    }
-
-    const csv = '\ufeff' + rows.join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const fname = `intimacoes_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.csv`;
-
-    const a = d.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = fname;
-    d.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      URL.revokeObjectURL(a.href);
-      a.remove();
-      showToast('CSV gerado');
-    }, 700);
+    loader.src = loaderWin.location.href;
+    await waitForFrameLoad(loader);
   }
 
-  function exportPDF(ifr) {
-    const d = safeRun('Falha ao acessar a tabela para PDF.', () => ifr.contentDocument, null);
-    const table = findMainTable(d);
-    if (!table) {
-      alert('Tabela não encontrada para exportação.');
-      return;
-    }
-
-    exportPDFWithJSPDF(table).catch((err) => {
-      logWarn('Falha no jsPDF; usando fallback de impressão.', err);
-      exportPDFViaPrintWindow(table);
+  /**
+   * Aguarda carga do iframe.
+   * @param {HTMLIFrameElement} frame
+   * @returns {Promise<void>}
+   */
+  function waitForFrameLoad(frame) {
+    return new Promise((resolve) => {
+      const handler = () => {
+        frame.removeEventListener('load', handler);
+        resolve();
+      };
+      frame.addEventListener('load', handler, { once: true });
     });
   }
 
-  async function exportPDFWithJSPDF(table) {
-    showToast('Gerando PDF...');
-    await ensurePdfLibs();
+  /**
+   * Captura uma assinatura simples da tabela.
+   * @param {HTMLTableElement | null} table
+   * @returns {string}
+   */
+  function captureTableSnapshot(table) {
+    if (!table) return 'missing';
+    const rows = Array.from(table.querySelectorAll('tbody tr')).filter((row) => row.querySelector('td'));
+    const firstText = rows[0] ? normalizeSpaces(rows[0].textContent || '').slice(0, 80) : '';
+    return `${rows.length}|${firstText}`;
+  }
 
-    const jsPDFNS = window.jspdf;
-    if (!jsPDFNS || typeof jsPDFNS.jsPDF !== 'function') {
-      throw new Error('jsPDF indisponível');
+  /**
+   * Espera uma mudanca na tabela usando polling curto e local.
+   * Isso substitui MutationObserver longo e reduz uso de memoria.
+   * @param {Document} doc
+   * @param {string} previousSnapshot
+   * @returns {Promise<void>}
+   */
+  function waitForTableChange(doc, previousSnapshot) {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const interval = window.setInterval(() => {
+        const nextTable = findBestMainTable(doc);
+        const nextSnapshot = captureTableSnapshot(nextTable);
+        if (nextSnapshot !== previousSnapshot || Date.now() - startedAt > 8000) {
+          window.clearInterval(interval);
+          resolve();
+        }
+      }, 120);
+    });
+  }
+
+  /**
+   * Exporta tabela para CSV.
+   */
+  function exportCSV() {
+    const table = state.pageContext?.mainTable;
+    if (!table) {
+      window.alert('Tabela nao encontrada para exportacao.');
+      return;
     }
-    if (typeof window.jspdf.jsPDF.API.autoTable !== 'function') {
-      throw new Error('AutoTable indisponível');
+
+    const rows = [];
+    const pushRow = (values) => {
+      rows.push(values.map(escapeCsv).join(';'));
+    };
+
+    const headers = Array.from((table.tHead || table).querySelectorAll('th')).map((cell) => normalizeSpaces(cell.innerText || cell.textContent || ''));
+    if (headers.length) pushRow(headers);
+
+    for (const row of Array.from(table.querySelectorAll('tbody tr'))) {
+      const values = Array.from(row.querySelectorAll('td')).map((cell) => normalizeSpaces(cell.innerText || cell.textContent || ''));
+      if (values.length) pushRow(values);
     }
 
-    const { head, body } = tableToMatrix(table);
-    if (!body.length) throw new Error('Sem dados para exportação');
+    const blob = new Blob(['\ufeff', rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    triggerDownload(blob, buildTimestampedFileName('intimacoes', 'csv'));
+    showToast('CSV gerado');
+  }
 
-    const now = new Date();
-    const dateStr = now.toLocaleString('pt-BR');
+  /**
+   * Exporta tabela para PDF.
+   */
+  function exportPDF() {
+    const table = state.pageContext?.mainTable;
+    if (!table) {
+      window.alert('Tabela nao encontrada para exportacao.');
+      return;
+    }
+
+    exportPdfWithJsPdf(table).catch((error) => {
+      logWarn('Falha ao gerar PDF via jsPDF. Sera usado o fallback de impressao.', error);
+      exportPdfViaPrint(table);
+    });
+  }
+
+  /**
+   * Exporta PDF com jsPDF carregado sob demanda.
+   * @param {HTMLTableElement} table
+   */
+  async function exportPdfWithJsPdf(table) {
+    await ensurePdfLibraries();
+
+    const jsPdfNamespace = window.jspdf;
+    if (!jsPdfNamespace?.jsPDF || typeof jsPdfNamespace.jsPDF.API.autoTable !== 'function') {
+      throw new Error('Bibliotecas jsPDF indisponiveis.');
+    }
+
+    const matrix = tableToMatrix(table);
+    if (!matrix.body.length) throw new Error('Tabela vazia.');
+
     const doc = new window.jspdf.jsPDF({
       orientation: 'landscape',
       unit: 'mm',
@@ -486,17 +1768,18 @@
       compress: true
     });
 
-    const pageW = doc.internal.pageSize.getWidth();
+    const now = new Date();
+    const pageWidth = doc.internal.pageSize.getWidth();
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(13);
-    doc.text('Intimações', 10, 10);
+    doc.text('Intimacoes', 10, 10);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
-    doc.text(`Gerado em: ${dateStr}`, 10, 15);
+    doc.text(`Gerado em: ${now.toLocaleString('pt-BR')}`, 10, 15);
 
     doc.autoTable({
-      head,
-      body,
+      head: matrix.head,
+      body: matrix.body,
       startY: 19,
       theme: 'grid',
       headStyles: {
@@ -519,1691 +1802,588 @@
         cellWidth: 'wrap',
         minCellHeight: 4
       },
-      willDrawCell: function (data) {
-        if (data.section === 'body' && data.column.index === 0) {
-          data.cell.styles.halign = 'center';
-        }
-      },
-      didDrawPage: function () {
+      didDrawPage: () => {
         const page = doc.internal.getNumberOfPages();
         doc.setFontSize(8);
         doc.setTextColor(90, 104, 124);
-        doc.text(`Página ${page}`, pageW - 22, doc.internal.pageSize.getHeight() - 4);
+        doc.text(`Pagina ${page}`, pageWidth - 24, doc.internal.pageSize.getHeight() - 4);
       }
     });
 
-    const pad = (n) => String(n).padStart(2, '0');
-    const fname = `intimacoes_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.pdf`;
-    doc.save(fname);
+    doc.save(buildTimestampedFileName('intimacoes', 'pdf'));
     showToast('PDF gerado');
   }
 
-  function exportPDFViaPrintWindow(table) {
-    const printWin = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=800');
-    if (!printWin) {
-      alert('Bloqueador de pop-up ativo. Permita pop-up para gerar PDF.');
+  /**
+   * Fallback de exportacao via janela de impressao.
+   * @param {HTMLTableElement} table
+   */
+  function exportPdfViaPrint(table) {
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=1200,height=800');
+    if (!printWindow) {
+      window.alert('Bloqueador de pop-up ativo. Permita pop-up para gerar PDF.');
       return;
     }
 
-    const dateStr = new Date().toLocaleString('pt-BR');
-    printWin.document.open();
-    printWin.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimações</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimações</h1><div class="meta">Gerado em: ${dateStr}</div>${table.outerHTML}</body></html>`);
-    printWin.document.close();
-    printWin.focus();
-    setTimeout(() => printWin.print(), 250);
-    showToast('Impressão PDF aberta');
+    const generatedAt = new Date().toLocaleString('pt-BR');
+    printWindow.document.open();
+    printWindow.document.write(
+      `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimacoes</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimacoes</h1><div class="meta">Gerado em: ${generatedAt}</div>${table.outerHTML}</body></html>`
+    );
+    printWindow.document.close();
+    printWindow.focus();
+    window.setTimeout(() => {
+      printWindow.print();
+    }, 250);
+    showToast('Impressao PDF aberta');
   }
 
-  async function ensurePdfLibs() {
+  /**
+   * Carrega jsPDF e AutoTable sob demanda.
+   * @returns {Promise<void>}
+   */
+  async function ensurePdfLibraries() {
     if (window.jspdf?.jsPDF && typeof window.jspdf.jsPDF.API.autoTable === 'function') return;
-    if (pdfLibPromise) return pdfLibPromise;
+    if (state.pdfPromise) return state.pdfPromise;
 
-    pdfLibPromise = (async () => {
-      await loadScript(JSPDF_CDN);
-      await loadScript(AUTOTABLE_CDN);
+    state.pdfPromise = (async () => {
+      await loadScriptOnce(PDF_CDNS.jspdf);
+      await loadScriptOnce(PDF_CDNS.autoTable);
       if (!window.jspdf?.jsPDF || typeof window.jspdf.jsPDF.API.autoTable !== 'function') {
-        throw new Error('Falha ao carregar jsPDF/AutoTable');
+        throw new Error('Nao foi possivel carregar jsPDF/AutoTable.');
       }
     })();
 
     try {
-      await pdfLibPromise;
+      await state.pdfPromise;
     } finally {
-      pdfLibPromise = null;
+      state.pdfPromise = null;
     }
   }
 
-  function loadScript(src) {
+  /**
+   * Carrega um script externo apenas uma vez.
+   * @param {string} src
+   * @returns {Promise<void>}
+   */
+  function loadScriptOnce(src) {
     return new Promise((resolve, reject) => {
-      if (document.querySelector(`script[data-pj-src="${src}"]`)) {
-        const s = document.querySelector(`script[data-pj-src="${src}"]`);
-        if (s.getAttribute('data-loaded') === '1') return resolve();
-        s.addEventListener('load', () => resolve(), { once: true });
-        s.addEventListener('error', () => reject(new Error(`Erro ao carregar ${src}`)), { once: true });
+      const existing = document.querySelector(`script[data-pjip-src="${src}"]`);
+      if (existing) {
+        if (existing.dataset.loaded === '1') {
+          resolve();
+          return;
+        }
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', () => reject(new Error(`Falha ao carregar ${src}`)), { once: true });
         return;
       }
 
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.setAttribute('data-pj-src', src);
-      s.onload = () => {
-        s.setAttribute('data-loaded', '1');
-        resolve();
-      };
-      s.onerror = () => reject(new Error(`Erro ao carregar ${src}`));
-      document.head.appendChild(s);
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = src;
+      script.dataset.pjipSrc = src;
+      script.addEventListener(
+        'load',
+        () => {
+          script.dataset.loaded = '1';
+          resolve();
+        },
+        { once: true }
+      );
+      script.addEventListener('error', () => reject(new Error(`Falha ao carregar ${src}`)), { once: true });
+      document.head.appendChild(script);
     });
   }
 
+  /**
+   * Converte tabela em matriz para exportacao.
+   * @param {HTMLTableElement} table
+   * @returns {{head: string[][], body: string[][]}}
+   */
   function tableToMatrix(table) {
-    const headRow = table.querySelector('thead tr') || table.querySelector('tr');
-    const head = [Array.from(headRow?.querySelectorAll('th,td') || []).map((el) => compactText(el.innerText || el.textContent || ''))];
-    const bodyRows = Array.from(table.querySelectorAll('tbody tr')).filter((tr) => tr.querySelector('td'));
-    const body = bodyRows.map((tr) =>
-      Array.from(tr.querySelectorAll('td')).map((td) => compactText(td.innerText || td.textContent || ''))
-    );
+    const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+    const head = [
+      Array.from(headerRow?.querySelectorAll('th,td') || []).map((cell) =>
+        normalizeSpaces(cell.innerText || cell.textContent || '')
+      )
+    ];
+
+    const body = Array.from(table.querySelectorAll('tbody tr'))
+      .filter((row) => row.querySelector('td'))
+      .map((row) =>
+        Array.from(row.querySelectorAll('td')).map((cell) =>
+          normalizeSpaces(cell.innerText || cell.textContent || '')
+        )
+      );
+
     return { head, body };
   }
 
-  function compactText(v) {
-    return String(v || '').replace(/\s+/g, ' ').trim();
+  /**
+   * Abre o painel de gerenciamento.
+   */
+  function openModal() {
+    state.modalOpen = true;
+    state.store.ui.panelOpen = true;
+    persistStore();
+    ensureModal();
+    renderModal();
   }
 
-  function cleanCSV(value) {
-    let v = String(value ?? '');
-    v = v.replace(/\r?\n|\r/g, ' ').trim();
-    if (/[;"\n]/.test(v)) v = `"${v.replace(/"/g, '""')}"`;
-    return v;
+  /**
+   * Fecha o painel de gerenciamento.
+   */
+  function closeModal() {
+    state.modalOpen = false;
+    state.store.ui.panelOpen = false;
+    persistStore();
+    const overlay = document.getElementById(IDS.modalOverlay);
+    if (overlay) overlay.dataset.open = 'false';
   }
 
-  function findMainTable(root) {
-    const tables = Array.from(root.querySelectorAll('table'));
-    let best = null;
-    let scoreBest = -1;
-    for (const t of tables) {
-      const headText = (t.tHead || t).textContent || '';
-      let s = 0;
-      if (/^\s*Num\.?/mi.test(headText)) s += 2;
-      if (/Processo/i.test(headText)) s += 2;
-      if (/Movimenta(ç|c)[aã]o/i.test(headText)) s += 3;
-      if (/Tipo/i.test(headText)) s += 1;
-      if (/Data\s*Leitura/i.test(headText)) s += 2;
-      if (/Data\s*Limite/i.test(headText)) s += 2;
-      if (s > scoreBest) {
-        scoreBest = s;
-        best = t;
-      }
-    }
-    return best;
-  }
+  /**
+   * Garante a existencia do modal apenas quando necessario.
+   */
+  function ensureModal() {
+    if (state.modalRoot) return;
 
-  function findPagerFallback(root) {
-    const blocks = Array.from(root.querySelectorAll('div,nav,td,p,form,span')).filter(
-      (el) => /\bPágina\b/i.test(el.textContent || '') && el.querySelectorAll('a').length
-    );
-    if (blocks.length) return blocks.sort((a, b) => b.querySelectorAll('a').length - a.querySelectorAll('a').length)[0];
-    return null;
-  }
+    const overlay = document.createElement('div');
+    overlay.id = IDS.modalOverlay;
+    overlay.dataset.open = 'false';
 
-  function analyzePager(doc, pagerEl) {
-    if (!pagerEl) return null;
-    const input = pagerEl.querySelector('#CaixaTextoPosicionar, .CaixaTextoPosicionar, input[type="text"], input[type="number"]');
-    let total = input ? parseInt((input.value || input.getAttribute('value') || '').trim(), 10) : NaN;
+    const panel = document.createElement('section');
+    panel.id = IDS.modalPanel;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', 'Gerenciar intimacoes');
 
-    if (!total || isNaN(total)) {
-      const lastA = Array.from(pagerEl.querySelectorAll('a')).find((a) => /última|ultima/i.test(a.textContent || ''));
-      if (lastA) {
-        const idx = extractLastNumber(lastA.getAttribute('href'));
-        if (typeof idx === 'number') total = idx + 1;
-      }
-    }
-    if (!total || isNaN(total) || total < 2) return null;
+    const head = document.createElement('div');
+    head.className = 'pjip-modal-head';
 
-    const hasBuscaDados = !!safeHasFunction(doc.defaultView, 'buscaDados');
-    const btnIr = pagerEl.querySelector('.BotaoIr, input[value="Ir"], button');
+    const headText = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'pjip-modal-title';
+    title.textContent = 'Minhas Intimacoes';
+    const subtitle = document.createElement('div');
+    subtitle.className = 'pjip-modal-subtitle';
+    subtitle.textContent = 'Triagem local com atualizacao sob demanda.';
+    headText.append(title, subtitle);
 
-    return {
-      totalPages: total,
-      canCallBuscaDados: hasBuscaDados,
-      hasGoButton: !!btnIr,
-      pageSizeFromHref: extractSecondNumberFromHref(pagerEl),
-      selectors: {
-        inputPath: input ? cssPath(input) : null,
-        irPath: btnIr ? cssPath(btnIr) : null
-      }
-    };
-  }
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'pjip-modal-close';
+    closeButton.textContent = '×';
+    closeButton.title = 'Fechar';
+    closeButton.addEventListener('click', () => closeModal());
 
-  async function navigateLoaderToPage(loader, humanPage, info) {
-    const w = loader.contentWindow;
-    const doc = safeRun('Falha ao acessar o iframe loader.', () => loader.contentDocument, null);
-    if (!doc) throw new Error('Documento do loader indisponível.');
+    head.append(headText, closeButton);
 
-    if (info.canCallBuscaDados && typeof w.buscaDados === 'function') {
-      const ready = observeTableChange(doc);
-      const idx = humanPage - 1;
-      const pageSize = info.pageSizeFromHref || 15;
+    const body = document.createElement('div');
+    body.className = 'pjip-modal-body';
+    body.innerHTML = `
+      <section class="pjip-toolbar">
+        <input type="search" data-role="search" placeholder="Buscar intimacao, processo ou texto">
+        <div class="pjip-checks">
+          <label><input type="checkbox" data-role="hide-done"> Ocultar concluidas</label>
+          <label><input type="checkbox" data-role="only-marked-page"> Ocultar nao marcadas na pagina</label>
+        </div>
+        <div class="pjip-toolbar-meta" data-role="meta"></div>
+      </section>
+      <section class="pjip-backup">
+        <div><strong>Backup remoto</strong></div>
+        <div class="pjip-backup-meta">Use um unico Gist no GitHub com um arquivo exclusivo para este script.</div>
+        <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
+        <input type="password" data-role="backup-token" placeholder="Token do GitHub">
+        <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+        <div class="pjip-checks">
+          <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+          <label><input type="checkbox" data-role="backup-auto"> Backup automatico</label>
+        </div>
+        <div class="pjip-backup-actions">
+          <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
+          <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
+          <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
+        </div>
+        <div class="pjip-backup-meta" data-role="backup-status"></div>
+        <div class="pjip-backup-meta" data-role="backup-last"></div>
+      </section>
+      <section data-role="list"></section>
+    `;
+
+    overlay.appendChild(panel);
+    panel.append(head, body);
+    document.body.appendChild(overlay);
+    state.modalRoot = overlay;
+
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeModal();
+    });
+
+    body.querySelector('[data-role="search"]')?.addEventListener('input', (event) => {
+      const input = /** @type {HTMLInputElement} */ (event.currentTarget);
+      state.store.ui.query = input.value || '';
+      persistStore();
+      renderModal();
+    });
+
+    body.querySelector('[data-role="hide-done"]')?.addEventListener('change', (event) => {
+      const input = /** @type {HTMLInputElement} */ (event.currentTarget);
+      state.store.ui.hideDone = input.checked;
+      persistStore();
+      renderModal();
+    });
+
+    body.querySelector('[data-role="only-marked-page"]')?.addEventListener('change', (event) => {
+      const input = /** @type {HTMLInputElement} */ (event.currentTarget);
+      state.store.ui.onlyMarkedOnPage = input.checked;
+      persistStore();
+      refreshFrameContext('modal-filter');
+      renderModal();
+    });
+
+    body.querySelector('[data-role="backup-send"]')?.addEventListener('click', async () => {
+      const statusNode = body.querySelector('[data-role="backup-status"]');
       try {
-        w.buscaDados(idx, pageSize);
-      } catch {}
-      await ready;
-      return;
-    }
-
-    if (info.hasGoButton && info.selectors.inputPath && info.selectors.irPath) {
-      const input = doc.querySelector(info.selectors.inputPath);
-      const ir = doc.querySelector(info.selectors.irPath);
-      if (input && ir) {
-        const ready = observeTableChange(doc);
-        input.value = String(humanPage);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        if (typeof ir.click === 'function') ir.click();
-        else ir.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        await ready;
-        return;
-      }
-    }
-
-    const a = Array.from(doc.querySelectorAll('#Paginacao a, .Paginacao a, a')).find(
-      (x) => parseInt((x.textContent || '').trim(), 10) === humanPage
-    );
-
-    if (a) {
-      const ready = observeTableChange(doc);
-      a.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await ready;
-      return;
-    }
-
-    loader.src = w.location.href;
-    await once(loader, 'load');
-  }
-
-  function once(target, evt) {
-    return new Promise((res) => {
-      const h = () => {
-        target.removeEventListener(evt, h);
-        res();
-      };
-      target.addEventListener(evt, h, { once: true });
-    });
-  }
-
-  function observeTableChange(doc) {
-    return new Promise((resolve) => {
-      const table = findMainTable(doc);
-      const root = table?.tBodies?.[0] || table || doc.body;
-      if (!root) {
-        resolve();
-        return;
-      }
-      const getRowCount = () => {
-        if (!table) return doc.querySelectorAll('table tbody tr').length || 0;
-        return table.querySelectorAll('tbody tr, tr').length || 0;
-      };
-      const startCount = getRowCount();
-      const observer = new MutationObserver(() => {
-        const now = getRowCount();
-        if (now !== startCount && now > 0) {
-          observer.disconnect();
-          resolve();
-        }
-      });
-      observer.observe(root, { childList: true, subtree: true });
-      setTimeout(() => {
-        observer.disconnect();
-        resolve();
-      }, 8000);
-    });
-  }
-
-  function extractLastNumber(str) {
-    if (!str) return null;
-    const m = String(str).match(/(\d+)\D*\)?\s*$/);
-    return m ? parseInt(m[1], 10) : null;
-  }
-
-  function extractSecondNumberFromHref(container) {
-    const a = container.querySelector('a[href^="javascript:buscaDados("]');
-    if (!a) return null;
-    const m = a.getAttribute('href').match(/buscaDados\(\s*\d+\s*,\s*(\d+)\s*\)/i);
-    return m ? parseInt(m[1], 10) : null;
-  }
-
-  function cssPath(el) {
-    const segs = [];
-    for (; el && el.nodeType === 1; el = el.parentElement) {
-      let s = el.nodeName.toLowerCase();
-      if (el.id) {
-        s += `#${CSS.escape(el.id)}`;
-        segs.unshift(s);
-        break;
-      }
-      let i = 1;
-      let sib = el;
-      while ((sib = sib.previousElementSibling)) if (sib.nodeName === el.nodeName) i++;
-      s += `:nth-of-type(${i})`;
-      segs.unshift(s);
-    }
-    return segs.join(' > ');
-  }
-
-  function safeHasFunction(win, name) {
-    try {
-      return typeof win?.[name] === 'function';
-    } catch (error) {
-      logWarn(`Falha ao verificar função ${name}.`, error);
-      return false;
-    }
-  }
-})();
-
-(() => {
-  'use strict';
-
-  if (window.top !== window.self) return;
-
-  const SCRIPT_ID = 'pj-intimacoes-marcadas';
-  const SCRIPT_META = {
-    schema: 'backup-v1',
-    scriptId: 'projudi-intimacao-page',
-    scriptName: 'Intimações',
-    version: typeof GM_info !== 'undefined' && GM_info?.script?.version ? String(GM_info.script.version) : '3.1',
-    fileName: 'projudi-intimacao-page.json'
-  };
-  const STORAGE_KEY = `${SCRIPT_ID}::store`;
-  const BACKUP_STORAGE_KEY = `${SCRIPT_ID}::backup`;
-  const STYLE_ID = `${SCRIPT_ID}-style`;
-  const FRAME_STYLE_ID = `${SCRIPT_ID}-frame-style`;
-  const PANEL_OVERLAY_ID = `${SCRIPT_ID}-overlay`;
-  const PANEL_ID = `${SCRIPT_ID}-panel`;
-  const LOG_PREFIX = '[Intimacoes Marcadas]';
-  const MAIN_IFRAME_SELECTOR = 'iframe#Principal, iframe[name="userMainFrame"]';
-  const TABLE_SELECTOR = 'table.Tabela, table#Tabela';
-
-  const state = {
-    refreshTimer: 0,
-    observer: null,
-    iframe: null,
-    iframeLoadHandler: null,
-    panel: null,
-    currentTables: [],
-    rowCache: new WeakMap(),
-    targetDocument: document,
-    menuRegistered: false,
-    menuCommandId: null,
-    backupTimer: 0,
-    store: loadStore()
-  };
-
-  const DEFAULT_BACKUP_SETTINGS = {
-    enabled: false,
-    gistId: '',
-    token: '',
-    fileName: SCRIPT_META.fileName,
-    autoBackupOnSave: false,
-    lastBackupAt: '',
-    lastBackupSignature: ''
-  };
-
-  init();
-
-  function init() {
-    safeRun('Falha ao iniciar o painel de marcacao.', () => {
-      injectRootStyles();
-      ensureFontAwesome(document);
-      registerMenuCommand();
-      state.store.ui.panelOpen = false;
-      bindIframe();
-      refreshContext();
-      installObserver();
-    });
-  }
-
-  function logWarn(message, meta) {
-    if (meta === undefined) {
-      console.warn(LOG_PREFIX, message);
-      return;
-    }
-    console.warn(LOG_PREFIX, message, meta);
-  }
-
-  function logError(message, error) {
-    console.error(LOG_PREFIX, message, error);
-  }
-
-  function safeRun(label, task, fallbackValue = null) {
-    try {
-      return task();
-    } catch (error) {
-      logError(label, error);
-      return fallbackValue;
-    }
-  }
-
-  function loadStore() {
-    const fallback = {
-      items: Object.create(null),
-      ui: {
-        panelOpen: false,
-        hideDone: true,
-        onlyMarkedOnPage: false,
-        query: ''
-      }
-    };
-
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return fallback;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return fallback;
-      const items = parsed.items && typeof parsed.items === 'object' ? parsed.items : Object.create(null);
-      const ui = parsed.ui && typeof parsed.ui === 'object' ? parsed.ui : {};
-      return {
-        items,
-        ui: {
-          panelOpen: Boolean(ui.panelOpen),
-          hideDone: ui.hideDone !== false,
-          onlyMarkedOnPage: Boolean(ui.onlyMarkedOnPage),
-          query: typeof ui.query === 'string' ? ui.query : ''
-        }
-      };
-    } catch (error) {
-      logWarn('Nao foi possivel carregar o armazenamento local. Reiniciando estado.', error);
-      return fallback;
-    }
-  }
-
-  function persistStore() {
-    safeRun('Falha ao persistir o armazenamento local.', () => {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.store));
-    });
-    scheduleAutoBackup();
-  }
-
-  function normalizeBackupSettings(value) {
-    const next = { ...DEFAULT_BACKUP_SETTINGS, ...(value || {}) };
-    next.enabled = !!next.enabled;
-    next.gistId = String(next.gistId || '').trim();
-    next.token = String(next.token || '').trim();
-    next.fileName = String(next.fileName || SCRIPT_META.fileName).trim() || SCRIPT_META.fileName;
-    next.autoBackupOnSave = !!next.autoBackupOnSave;
-    next.lastBackupAt = String(next.lastBackupAt || '').trim();
-    next.lastBackupSignature = String(next.lastBackupSignature || '').trim();
-    return next;
-  }
-
-  function loadBackupSettings() {
-    try {
-      const raw = localStorage.getItem(BACKUP_STORAGE_KEY);
-      if (!raw) return normalizeBackupSettings(DEFAULT_BACKUP_SETTINGS);
-      return normalizeBackupSettings(JSON.parse(raw));
-    } catch (_) {
-      return normalizeBackupSettings(DEFAULT_BACKUP_SETTINGS);
-    }
-  }
-
-  function saveBackupSettings(next) {
-    const normalized = normalizeBackupSettings(next);
-    safeRun('Falha ao salvar configuracoes de backup.', () => {
-      localStorage.setItem(BACKUP_STORAGE_KEY, JSON.stringify(normalized));
-    });
-    return normalized;
-  }
-
-  function formatLastBackupLabel(value) {
-    if (!value) return 'Ultimo backup: ainda nao enviado.';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'Ultimo backup: ainda nao enviado.';
-    return `Ultimo backup: ${date.toLocaleString('pt-BR')}.`;
-  }
-
-  function buildExportPayload() {
-    return {
-      schema: SCRIPT_META.schema,
-      scriptId: SCRIPT_META.scriptId,
-      scriptName: SCRIPT_META.scriptName,
-      version: SCRIPT_META.version,
-      exportedAt: new Date().toISOString(),
-      items: state.store.items
-    };
-  }
-
-  function buildBackupSignature() {
-    return JSON.stringify(state.store.items);
-  }
-
-  function scheduleAutoBackup() {
-    clearTimeout(state.backupTimer);
-    state.backupTimer = 0;
-    const backupSettings = loadBackupSettings();
-    if (!backupSettings.enabled || !backupSettings.autoBackupOnSave) return;
-    const signature = buildBackupSignature();
-    if (signature === backupSettings.lastBackupSignature) return;
-    state.backupTimer = window.setTimeout(async () => {
-      state.backupTimer = 0;
-      try {
-        await pushBackupToGist(backupSettings, buildExportPayload());
+        const settings = saveBackupSettings(readBackupSettingsFromModal(body));
+        setNodeText(statusNode, 'Enviando backup...');
+        const signature = JSON.stringify(state.store.items);
+        await pushBackupToGist(settings, buildBackupPayload());
         saveBackupSettings({
-          ...backupSettings,
+          ...settings,
           lastBackupAt: new Date().toISOString(),
           lastBackupSignature: signature
         });
-        if (state.panel) renderPanel();
+        setNodeText(statusNode, 'Backup enviado com sucesso.');
+        renderModal();
       } catch (error) {
-        logWarn('Falha no backup automatico das intimacoes.', error);
-      }
-    }, 700);
-  }
-
-  function githubRequest(options) {
-    return new Promise((resolve, reject) => {
-      if (typeof GM_xmlhttpRequest !== 'function') {
-        reject(new Error('GM_xmlhttpRequest indisponivel.'));
-        return;
-      }
-      GM_xmlhttpRequest({
-        method: options.method || 'GET',
-        url: options.url,
-        headers: options.headers || {},
-        data: options.data,
-        onload: resolve,
-        onerror: () => reject(new Error('Falha de rede ao acessar o GitHub.')),
-        ontimeout: () => reject(new Error('Tempo esgotado ao acessar o GitHub.'))
-      });
-    });
-  }
-
-  function parseGithubError(response) {
-    try {
-      const parsed = JSON.parse(response.responseText || '{}');
-      if (parsed && parsed.message) return parsed.message;
-    } catch (_) {}
-    return `GitHub respondeu com status ${response.status}.`;
-  }
-
-  async function pushBackupToGist(backupSettings, payload) {
-    if (!backupSettings.gistId) throw new Error('Informe o Gist ID.');
-    if (!backupSettings.token) throw new Error('Informe o token do GitHub.');
-    const response = await githubRequest({
-      method: 'PATCH',
-      url: `https://api.github.com/gists/${encodeURIComponent(backupSettings.gistId)}`,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${backupSettings.token}`,
-        'Content-Type': 'application/json'
-      },
-      data: JSON.stringify({
-        files: {
-          [backupSettings.fileName]: {
-            content: JSON.stringify(payload, null, 2)
-          }
-        }
-      })
-    });
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(parseGithubError(response));
-    }
-    return JSON.parse(response.responseText || '{}');
-  }
-
-  async function readBackupFromGist(backupSettings) {
-    if (!backupSettings.gistId) throw new Error('Informe o Gist ID.');
-    if (!backupSettings.token) throw new Error('Informe o token do GitHub.');
-    const response = await githubRequest({
-      method: 'GET',
-      url: `https://api.github.com/gists/${encodeURIComponent(backupSettings.gistId)}`,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${backupSettings.token}`
+        setNodeText(statusNode, error instanceof Error ? error.message : 'Falha ao enviar backup.');
       }
     });
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(parseGithubError(response));
-    }
-    const gist = JSON.parse(response.responseText || '{}');
-    const file = gist && gist.files ? gist.files[backupSettings.fileName] : null;
-    if (!file || !file.content) throw new Error('Arquivo de backup nao encontrado no Gist.');
-    return JSON.parse(file.content);
-  }
 
-  function injectRootStyles() {
-    if (document.getElementById(STYLE_ID)) return;
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = `
-      #${PANEL_OVERLAY_ID} {
-        position: fixed;
-        inset: 0;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        background: rgba(8, 28, 52, .28);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        z-index: 2147483000;
-        font-family: Arial, sans-serif;
-      }
-      #${PANEL_OVERLAY_ID}[data-open="true"] {
-        display: flex;
-      }
-      #${PANEL_ID} {
-        width: min(860px, calc(100vw - 48px));
-        max-height: min(80vh, 860px);
-        display: flex;
-        flex-direction: column;
-        background: #fff;
-        border: 1px solid #cfdaea;
-        border-radius: 16px;
-        box-shadow: 0 22px 48px rgba(8, 32, 61, .22);
-        overflow: hidden;
-      }
-      .pjim-panel__header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 14px 16px 12px;
-        color: #fff;
-        background: linear-gradient(180deg, #2f72b8 0%, #245f9d 100%);
-      }
-      .pjim-panel__head-text {
-        min-width: 0;
-      }
-      .pjim-panel__title {
-        margin: 0;
-        font-size: 26px;
-        font-weight: 700;
-      }
-      .pjim-panel__subtitle {
-        margin-top: 4px;
-        font-size: 13px;
-        opacity: .92;
-      }
-      .pjim-panel__close {
-        appearance: none;
-        border: 0;
-        width: 38px;
-        min-width: 38px;
-        height: 38px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, .18);
-        color: #fff;
-        font-size: 26px;
-        line-height: 1;
-        cursor: pointer;
-      }
-      .pjim-panel__close:hover {
-        background: rgba(255, 255, 255, .26);
-      }
-      .pjim-panel__body {
-        display: grid;
-        gap: 12px;
-        padding: 14px;
-        background: #f7f9fc;
-        overflow: auto;
-      }
-      .pjim-panel__toolbar {
-        display: grid;
-        gap: 10px;
-      }
-      .pjim-panel__search {
-        width: 100%;
-        min-width: 0;
-        box-sizing: border-box;
-        border: 1px solid #c9d6e9;
-        border-radius: 12px;
-        padding: 10px 12px;
-        font: inherit;
-      }
-      .pjim-panel__checks {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        color: #375272;
-        font-size: 14px;
-      }
-      .pjim-panel__checks label {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        cursor: pointer;
-      }
-      .pjim-panel__meta {
-        font-size: 12px;
-        color: #61748d;
-      }
-      .pjim-backup {
-        display: grid;
-        gap: 8px;
-        padding: 12px;
-        border: 1px solid #d6e0ef;
-        border-radius: 14px;
-        background: #fff;
-      }
-      .pjim-backup__title {
-        font-size: 18px;
-        font-weight: 700;
-        color: #164172;
-      }
-      .pjim-backup__hint {
-        font-size: 12px;
-        color: #61748d;
-      }
-      .pjim-backup__grid {
-        display: grid;
-        gap: 8px;
-      }
-      .pjim-backup__grid input {
-        width: 100%;
-        min-width: 0;
-        box-sizing: border-box;
-        border: 1px solid #c9d6e9;
-        border-radius: 10px;
-        padding: 9px 10px;
-        font: inherit;
-      }
-      .pjim-backup__checks {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        color: #375272;
-        font-size: 14px;
-      }
-      .pjim-backup__checks label {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        cursor: pointer;
-      }
-      .pjim-backup__actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .pjim-backup__status,
-      .pjim-backup__last {
-        font-size: 12px;
-        color: #61748d;
-      }
-      .pjim-list {
-        display: grid;
-        gap: 10px;
-      }
-      .pjim-empty {
-        padding: 18px;
-        border: 1px dashed #cad7ea;
-        border-radius: 14px;
-        background: #fff;
-        color: #5c718b;
-        text-align: center;
-      }
-      .pjim-card {
-        display: grid;
-        gap: 8px;
-        padding: 12px;
-        background: #fff;
-        border: 1px solid #d6e0ef;
-        border-radius: 14px;
-      }
-      .pjim-card--done {
-        opacity: .76;
-      }
-      .pjim-card__top {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .pjim-card__id {
-        font-size: 21px;
-        font-weight: 700;
-        color: #164172;
-      }
-      .pjim-pill {
-        border-radius: 999px;
-        padding: 4px 8px;
-        font-size: 12px;
-        font-weight: 700;
-        color: #2d506f;
-        background: #e8eff8;
-      }
-      .pjim-pill--done {
-        color: #18663a;
-        background: #dff3e5;
-      }
-      .pjim-pill--late {
-        color: #8f2525;
-        background: #ffe1e1;
-      }
-      .pjim-pill--soon {
-        color: #805400;
-        background: #fff0c7;
-      }
-      .pjim-card__grid {
-        display: grid;
-        gap: 6px;
-        color: #20364f;
-        font-size: 13px;
-      }
-      .pjim-card__line strong {
-        color: #4f6783;
-      }
-      .pjim-card__movement {
-        color: #36506f;
-      }
-      .pjim-card__actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .pjim-card__action {
-        appearance: none;
-        border: 1px solid #c5d3e7;
-        background: #fff;
-        color: #1d4d87;
-        border-radius: 10px;
-        padding: 8px 10px;
-        cursor: pointer;
-        font: inherit;
-      }
-      .pjim-card__action:hover {
-        background: #eef5ff;
-      }
-      .pjim-card__action--primary {
-        background: #1f69d5;
-        border-color: #1f69d5;
-        color: #fff;
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function injectFrameStyles(targetDoc) {
-    if (!targetDoc || targetDoc.getElementById(FRAME_STYLE_ID)) return;
-    const style = targetDoc.createElement('style');
-    style.id = FRAME_STYLE_ID;
-    style.textContent = `
-      .pjim-row--marked {
-        background: linear-gradient(90deg, rgba(70, 141, 255, 0.16), rgba(70, 141, 255, 0.04)) !important;
-      }
-      .pjim-row--marked td:first-child,
-      .pjim-row--marked td:nth-child(2) {
-        box-shadow: inset 4px 0 0 #2f7ae5;
-      }
-      .pjim-row--done {
-        background: linear-gradient(90deg, rgba(72, 178, 115, 0.18), rgba(72, 178, 115, 0.05)) !important;
-      }
-      .pjim-row--hidden {
-        display: none !important;
-      }
-      table.pjim-table {
-        width: 100% !important;
-        margin-right: 0 !important;
-      }
-      table.pjim-table tbody tr td {
-        padding-top: 1px !important;
-        padding-bottom: 1px !important;
-        line-height: 1.15 !important;
-      }
-      .pjim-inline {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        margin-left: 3px;
-        white-space: nowrap;
-        vertical-align: middle;
-        line-height: 1;
-      }
-      .pjim-btn {
-        appearance: none;
-        color: #1d4d87;
-        cursor: pointer;
-        padding: 0 !important;
-        margin: 0 !important;
-        min-width: 0 !important;
-        width: 18px;
-        height: 18px;
-        line-height: 1 !important;
-        transition: color .15s ease, opacity .15s ease;
-        vertical-align: middle;
-        text-decoration: none;
-        background: transparent !important;
-        border: 0 !important;
-        box-shadow: none !important;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .pjim-btn i {
-        pointer-events: none;
-        font-size: 18px;
-        line-height: 1;
-        display: inline-block;
-        vertical-align: middle;
-      }
-      .pjim-btn:hover {
-        background: transparent;
-        color: #114b96;
-      }
-      .pjim-btn[disabled] {
-        opacity: .35;
-        cursor: default;
-      }
-      .pjim-btn[disabled]:hover {
-        background: transparent;
-        color: #1d4d87;
-      }
-      .pjim-btn[aria-disabled="true"] {
-        opacity: .35;
-        cursor: default;
-        pointer-events: none;
-      }
-      .pjim-btn--active {
-        background: transparent;
-        color: #2f7ae5;
-      }
-      .pjim-btn--active:hover {
-        background: transparent;
-        color: #2466c5;
-      }
-      .pjim-native-host {
-        white-space: nowrap;
-        vertical-align: middle !important;
-      }
-      .pjim-quantity-row td {
-        background: #cfcfcf !important;
-        font-weight: 700;
-        text-align: right !important;
-        padding-right: 10px !important;
-        line-height: 1.1 !important;
-      }
-    `;
-    (targetDoc.head || targetDoc.documentElement).appendChild(style);
-  }
-
-  function ensureFontAwesome(targetDoc) {
-    if (!targetDoc || targetDoc.getElementById(`${SCRIPT_ID}-fa`)) return;
-    const link = targetDoc.createElement('link');
-    link.id = `${SCRIPT_ID}-fa`;
-    link.rel = 'stylesheet';
-    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css';
-    (targetDoc.head || targetDoc.documentElement).appendChild(link);
-  }
-
-  function registerMenuCommand() {
-    if (typeof GM_registerMenuCommand !== 'function') return;
-    if (state.menuRegistered && state.menuCommandId !== null && typeof GM_unregisterMenuCommand === 'function') {
-      safeRun('Falha ao remover o item anterior do menu do Tampermonkey.', () => {
-        GM_unregisterMenuCommand(state.menuCommandId);
-      });
-    }
-    state.menuCommandId = GM_registerMenuCommand('Gerenciar intimacoes', () => {
-      state.store.ui.panelOpen = !state.store.ui.panelOpen;
-      persistStore();
-      ensureUi();
-      updatePanelVisibility();
-    });
-    state.menuRegistered = true;
-  }
-
-  function bindIframe() {
-    const iframe = document.querySelector(MAIN_IFRAME_SELECTOR);
-    if (!iframe || iframe === state.iframe) return;
-    if (state.iframe && state.iframeLoadHandler) {
-      state.iframe.removeEventListener('load', state.iframeLoadHandler);
-    }
-    state.iframe = iframe;
-    state.iframeLoadHandler = () => {
-      state.rowCache = new WeakMap();
-      refreshContext();
-      installObserver();
-    };
-    iframe.addEventListener('load', state.iframeLoadHandler, { passive: true });
-  }
-
-  function refreshContext() {
-    state.targetDocument = getActiveDocument();
-    ensureFontAwesome(state.targetDocument);
-    injectFrameStyles(state.targetDocument);
-    state.currentTables = findRelevantTables(state.targetDocument);
-    if (!state.currentTables.length) {
-      teardownUiIfNoItems();
-      return;
-    }
-    renderTables();
-    if (state.panel) renderPanel();
-  }
-
-  function teardownUiIfNoItems() {
-    if (Object.keys(state.store.items).length > 0) {
-      if (state.panel) renderPanel();
-      return;
-    }
-    document.getElementById(PANEL_OVERLAY_ID)?.remove();
-    state.panel = null;
-  }
-
-  function installObserver() {
-    if (state.observer) state.observer.disconnect();
-    bindIframe();
-    const targetDoc = getActiveDocument();
-    const root = targetDoc.getElementById('divTabela') || targetDoc.getElementById('divCorpo') || targetDoc.body || targetDoc.documentElement;
-    if (!root) return;
-
-    state.observer = new MutationObserver((mutations) => {
-      if (!hasRelevantMutation(mutations)) return;
-      scheduleRefresh();
-    });
-    state.observer.observe(root, { childList: true, subtree: true });
-  }
-
-  function hasRelevantMutation(mutations) {
-    return mutations.some((mutation) => {
-      const changedNodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes];
-      return changedNodes.some((node) => isRelevantNode(node));
-    });
-  }
-
-  function isRelevantNode(node) {
-    if (!node || node.nodeType !== 1) return false;
-    const element = node;
-    if (element.matches?.(TABLE_SELECTOR)) return true;
-    if (element.closest?.('table')) return true;
-    if (element.querySelector?.(TABLE_SELECTOR)) return true;
-    if (element.matches?.('fieldset, legend, tbody, tr')) return true;
-    return false;
-  }
-
-  function scheduleRefresh() {
-    if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
-    state.refreshTimer = window.setTimeout(() => {
-      state.refreshTimer = 0;
-      bindIframe();
-      refreshContext();
-    }, 140);
-  }
-
-  function getActiveDocument() {
-    const iframe = document.querySelector(MAIN_IFRAME_SELECTOR);
-    if (iframe) {
-      const iframeDoc = safeRun('Falha ao acessar o documento do iframe principal.', () => iframe.contentDocument, null);
-      if (iframeDoc && iframeDoc.body) return iframeDoc;
-    }
-    return document;
-  }
-
-  function findRelevantTables(targetDoc) {
-    return Array.from(targetDoc.querySelectorAll(TABLE_SELECTOR)).filter((table) => {
-      const headerMap = getHeaderMap(table);
-      if (headerMap.intimacao < 0 || headerMap.processo < 0 || headerMap.movimentacao < 0) return false;
-      const legend = table.closest('fieldset')?.querySelector('legend')?.textContent || '';
-      const title = targetDoc.querySelector('h1,h2,.Titulo,.titulo')?.textContent || '';
-      const bodyText = targetDoc.body?.textContent || '';
-      const isIntimacoesPage =
-        isIntimationContextText(title) ||
-        isIntimationContextText(bodyText) ||
-        /consultar intima/i.test(normalizeText(bodyText));
-      return isIntimationContextText(legend) || isIntimacoesPage;
-    });
-  }
-
-  function isIntimationContextText(value) {
-    const text = normalizeText(value);
-    return text.includes('intimac') || text.includes('citac');
-  }
-
-  function getHeaderMap(table) {
-    const headers = Array.from(table.querySelectorAll('thead th')).map((th, index) => ({
-      index,
-      text: normalizeText(th.textContent)
-    }));
-
-    const findIndex = (...patterns) => {
-      const match = headers.find(({ text }) => patterns.some((pattern) => text.includes(pattern)));
-      return match ? match.index : -1;
-    };
-    const findLastIndex = (...patterns) => {
-      const matches = headers.filter(({ text }) => patterns.some((pattern) => text.includes(pattern)));
-      return matches.length ? matches[matches.length - 1].index : -1;
-    };
-
-    return {
-      intimacao: findIndex('num.', 'num', 'número', 'numero'),
-      processo: findIndex('processo'),
-      movimentacao: findIndex('movimentação', 'movimentacao'),
-      dataBase: findIndex('data leitura', 'data publicação', 'data publicacao'),
-      prazo: findIndex('possível data limite', 'possivel data limite', 'data limite'),
-      marcar: findIndex('marcar'),
-      detalhes: findIndex('detalhes'),
-      tipo: findIndex('tipo'),
-      actionHost: findLastIndex('opcoes', 'opções', 'opcoes', 'marcar', 'descartar', 'detalhes')
-    };
-  }
-
-  function extractRowData(row, headerMap) {
-    const cells = Array.from(row.children);
-    const id = getCellText(cells[headerMap.intimacao]);
-    const processNumber = getCellText(cells[headerMap.processo]);
-    const movement = getCellText(cells[headerMap.movimentacao]);
-
-    if (!id || !/^\d+$/.test(id) || !processNumber) return null;
-
-    const baseUrl = row.ownerDocument?.location?.href || window.location.href;
-    const processLink = extractTargetFromElement(
-      findNavigationElement(
-        cells[headerMap.processo],
-        'a[href*="BuscaProcesso"], button[onclick*="BuscaProcesso"], [onclick*="BuscaProcesso"]'
-      ),
-      baseUrl
-    );
-    const processActionSelector = 'a[href*="BuscaProcesso"], button[onclick*="BuscaProcesso"], [onclick*="BuscaProcesso"]';
-    const nativeMarkButton = headerMap.marcar >= 0
-      ? findNavigationElement(
-        cells[headerMap.marcar],
-        'button[onclick*="DescartarPendenciaProcesso"], a[href*="DescartarPendenciaProcesso"], button[title*="marcar" i], a[title*="marcar" i]'
-      )
-      : row.querySelector('button[title*="marcar" i], a[title*="marcar" i], button[onclick*="DescartarPendenciaProcesso" i], a[href*="DescartarPendenciaProcesso" i]');
-    const type = headerMap.tipo >= 0 ? getCellText(cells[headerMap.tipo]) : 'Intimacao';
-    const observedAt = headerMap.dataBase >= 0 ? getCellText(cells[headerMap.dataBase]) : '';
-    const deadline = headerMap.prazo >= 0 ? getCellText(cells[headerMap.prazo]) : '';
-    const sourceLegend = row.closest('fieldset')?.querySelector('legend')?.textContent?.trim() || '';
-    const nativeMarkHref = extractTargetFromElement(nativeMarkButton, baseUrl);
-    const isNativeDone = /finalizada=true/i.test(nativeMarkHref);
-
-    return {
-      id,
-      processNumber,
-      processLink,
-      processActionSelector,
-      movement,
-      type,
-      observedAt,
-      deadline,
-      sourceLegend,
-      nativeMarkHref,
-      isNativeDone
-    };
-  }
-
-  function renderTables() {
-    const markedIds = new Set(Object.keys(state.store.items));
-    state.currentTables.forEach((table) => {
-      table.classList.add('pjim-table');
-      const headerMap = getHeaderMap(table);
-      Array.from(table.tBodies).forEach((tbody) => {
-        Array.from(tbody.rows).forEach((row) => renderRow(row, headerMap, markedIds));
-      });
-    });
-  }
-
-  function renderRow(row, headerMap, markedIds) {
-    const cells = Array.from(row.children);
-    const rowData = extractRowData(row, headerMap);
-    if (!rowData) return;
-
-    const storedItem = state.store.items[rowData.id];
-    if (storedItem) mergeObservedData(rowData.id, rowData);
-
-    const effectiveItem = state.store.items[rowData.id];
-    const signature = JSON.stringify({
-      id: rowData.id,
-      process: rowData.processNumber,
-      movement: rowData.movement,
-      observedAt: rowData.observedAt,
-      deadline: rowData.deadline,
-      marked: Boolean(effectiveItem),
-      done: Boolean(effectiveItem && effectiveItem.done),
-      onlyMarkedOnPage: Boolean(state.store.ui.onlyMarkedOnPage)
-    });
-
-    if (state.rowCache.get(row) === signature) return;
-    state.rowCache.set(row, signature);
-
-    row.classList.remove('pjim-row--marked', 'pjim-row--done', 'pjim-row--hidden');
-
-    if (effectiveItem) {
-      row.classList.add('pjim-row--marked');
-      if (effectiveItem.done) row.classList.add('pjim-row--done');
-    }
-
-    if (state.store.ui.onlyMarkedOnPage && !markedIds.has(rowData.id)) {
-      row.classList.add('pjim-row--hidden');
-    }
-
-    const actionCellIndex = headerMap.actionHost >= 0 ? headerMap.actionHost : Math.max(headerMap.marcar, headerMap.detalhes);
-    const actionCell = actionCellIndex >= 0 ? cells[actionCellIndex] : null;
-    if (!actionCell) return;
-    actionCell.classList.add('pjim-native-host');
-    actionCell.querySelector('.pjim-inline')?.remove();
-
-    const markButton = document.createElement('span');
-    markButton.className = `pjim-btn${effectiveItem ? ' pjim-btn--active' : ''}`;
-    markButton.setAttribute('role', 'button');
-    markButton.tabIndex = 0;
-    markButton.title = effectiveItem ? 'Remover das minhas intimacoes' : 'Marcar como minha';
-    markButton.innerHTML = effectiveItem
-      ? '<i class="fa-solid fa-star fa-lg" aria-hidden="true"></i>'
-      : '<i class="fa-regular fa-star fa-lg" aria-hidden="true"></i>';
-    bindInlineAction(markButton, () => toggleMarked(rowData));
-
-    const doneButton = document.createElement('span');
-    doneButton.className = `pjim-btn${effectiveItem && effectiveItem.done ? ' pjim-btn--active' : ''}`;
-    doneButton.setAttribute('role', 'button');
-    doneButton.tabIndex = effectiveItem ? 0 : -1;
-    doneButton.title = effectiveItem ? (effectiveItem.done ? 'Reabrir intimacao' : 'Marcar como concluida') : 'Marque primeiro como sua';
-    doneButton.innerHTML = '<i class="fa-solid fa-check fa-lg" aria-hidden="true"></i>';
-    if (!effectiveItem) {
-      doneButton.setAttribute('aria-disabled', 'true');
-    } else {
-      bindInlineAction(doneButton, () => toggleDone(rowData.id));
-    }
-
-    const actions = document.createElement('span');
-    actions.className = 'pjim-inline';
-    actions.append(markButton, doneButton);
-    actionCell.appendChild(actions);
-  }
-
-  function toggleMarked(rowData) {
-    const current = state.store.items[rowData.id];
-    if (current) {
-      delete state.store.items[rowData.id];
-      persistStore();
-      renderPanel();
-      renderTables();
-      return;
-    }
-
-    state.store.items[rowData.id] = {
-      id: rowData.id,
-      processNumber: rowData.processNumber,
-      processLink: rowData.processLink || '',
-      processActionSelector: rowData.processActionSelector || '',
-      movement: rowData.movement,
-      type: rowData.type,
-      observedAt: rowData.observedAt,
-      deadline: rowData.deadline,
-      sourceLegend: rowData.sourceLegend,
-      nativeMarkHref: rowData.nativeMarkHref || '',
-      nativeDone: Boolean(rowData.isNativeDone),
-      done: Boolean(rowData.isNativeDone),
-      updatedAt: new Date().toISOString()
-    };
-
-    persistStore();
-    renderPanel();
-    renderTables();
-  }
-
-  function toggleDone(id) {
-    const item = state.store.items[id];
-    if (!item) return;
-    item.done = !item.done;
-    item.updatedAt = new Date().toISOString();
-    persistStore();
-    renderPanel();
-    renderTables();
-  }
-
-  function mergeObservedData(id, observedData) {
-    const item = state.store.items[id];
-    if (!item) return;
-    item.processNumber = observedData.processNumber || item.processNumber;
-    item.processLink = observedData.processLink || item.processLink;
-    item.processActionSelector = observedData.processActionSelector || item.processActionSelector;
-    item.movement = observedData.movement || item.movement;
-    item.type = observedData.type || item.type;
-    item.observedAt = observedData.observedAt || item.observedAt;
-    item.deadline = observedData.deadline || item.deadline;
-    item.sourceLegend = observedData.sourceLegend || item.sourceLegend;
-    item.nativeMarkHref = observedData.nativeMarkHref || item.nativeMarkHref;
-    item.nativeDone = Boolean(observedData.isNativeDone);
-  }
-
-  function ensureUi() {
-    if (!state.panel) {
-      const overlay = document.createElement('div');
-      overlay.id = PANEL_OVERLAY_ID;
-      overlay.dataset.open = 'false';
-      overlay.innerHTML = `
-        <section id="${PANEL_ID}" role="dialog" aria-modal="true" aria-label="Gerenciar intimacoes">
-          <div class="pjim-panel__header">
-            <div class="pjim-panel__head-text">
-              <div class="pjim-panel__title">Minhas Intimacoes</div>
-              <div class="pjim-panel__subtitle">Triagem por numero da intimacao.</div>
-            </div>
-            <button type="button" class="pjim-panel__close" title="Fechar">x</button>
-          </div>
-          <div class="pjim-panel__body">
-            <div class="pjim-panel__toolbar">
-              <input class="pjim-panel__search" type="search" placeholder="Buscar intimacao, processo ou texto" />
-              <div class="pjim-panel__checks">
-                <label><input type="checkbox" data-role="hide-done" /> Ocultar concluidas</label>
-                <label><input type="checkbox" data-role="only-marked-page" /> Ocultar nao marcadas na pagina</label>
-              </div>
-              <div class="pjim-panel__meta"></div>
-            </div>
-            <section class="pjim-backup">
-              <div class="pjim-backup__title">Backup remoto</div>
-              <div class="pjim-backup__hint">Use um unico Gist no GitHub e um arquivo separado para este script.</div>
-              <div class="pjim-backup__grid">
-                <input type="text" data-role="backup-gist-id" placeholder="Gist ID" />
-                <input type="password" data-role="backup-token" placeholder="Token do GitHub" />
-                <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo" />
-              </div>
-              <div class="pjim-backup__checks">
-                <label><input type="checkbox" data-role="backup-enabled" /> Ativar backup por Gist no GitHub.</label>
-                <label><input type="checkbox" data-role="backup-auto" /> Backup automatico</label>
-              </div>
-              <div class="pjim-backup__actions">
-                <button type="button" class="pjim-card__action" data-role="backup-send">Enviar backup</button>
-                <button type="button" class="pjim-card__action" data-role="backup-restore">Restaurar backup</button>
-                <button type="button" class="pjim-card__action" data-role="backup-clear">Limpar backup</button>
-              </div>
-              <div class="pjim-backup__status" data-role="backup-status"></div>
-              <div class="pjim-backup__last" data-role="backup-last">Ultimo backup: ainda nao enviado.</div>
-            </section>
-            <div class="pjim-list"></div>
-          </div>
-        </section>
-      `;
-      document.body.appendChild(overlay);
-      state.panel = overlay.querySelector(`#${PANEL_ID}`);
-
-      overlay.addEventListener('click', (event) => {
-        if (event.target !== overlay) return;
-        state.store.ui.panelOpen = false;
+    body.querySelector('[data-role="backup-restore"]')?.addEventListener('click', async () => {
+      const statusNode = body.querySelector('[data-role="backup-status"]');
+      try {
+        const settings = saveBackupSettings(readBackupSettingsFromModal(body));
+        setNodeText(statusNode, 'Restaurando backup...');
+        const payload = await readBackupFromGist(settings);
+        state.store.items = payload?.items && typeof payload.items === 'object' ? payload.items : Object.create(null);
         persistStore();
-        updatePanelVisibility();
-      });
-
-      state.panel?.querySelector('.pjim-panel__close')?.addEventListener('click', () => {
-        state.store.ui.panelOpen = false;
-        persistStore();
-        updatePanelVisibility();
-      });
-
-      state.panel?.querySelector('.pjim-panel__search')?.addEventListener('input', (event) => {
-        const input = event.currentTarget;
-        state.store.ui.query = input.value || '';
-        persistStore();
-        renderPanel();
-      });
-
-      state.panel?.querySelector('[data-role="hide-done"]')?.addEventListener('change', (event) => {
-        const input = event.currentTarget;
-        state.store.ui.hideDone = input.checked;
-        persistStore();
-        renderPanel();
-      });
-
-      state.panel?.querySelector('[data-role="only-marked-page"]')?.addEventListener('change', (event) => {
-        const input = event.currentTarget;
-        state.store.ui.onlyMarkedOnPage = input.checked;
-        persistStore();
-        renderTables();
-      });
-
-      const backupEnabled = state.panel?.querySelector('[data-role="backup-enabled"]');
-      const backupGistId = state.panel?.querySelector('[data-role="backup-gist-id"]');
-      const backupToken = state.panel?.querySelector('[data-role="backup-token"]');
-      const backupFileName = state.panel?.querySelector('[data-role="backup-file-name"]');
-      const backupAuto = state.panel?.querySelector('[data-role="backup-auto"]');
-      const backupSend = state.panel?.querySelector('[data-role="backup-send"]');
-      const backupRestore = state.panel?.querySelector('[data-role="backup-restore"]');
-      const backupClear = state.panel?.querySelector('[data-role="backup-clear"]');
-      const backupStatus = state.panel?.querySelector('[data-role="backup-status"]');
-      const backupLast = state.panel?.querySelector('[data-role="backup-last"]');
-
-      const hasBackupUi = [
-        backupEnabled,
-        backupGistId,
-        backupToken,
-        backupFileName,
-        backupAuto,
-        backupSend,
-        backupRestore,
-        backupClear,
-        backupStatus,
-        backupLast
-      ].every(Boolean);
-
-      const showBackupStatus = (message, type) => {
-        if (!hasBackupUi || !backupStatus) return;
-        backupStatus.textContent = String(message || '');
-        backupStatus.style.color = type === 'err' ? '#b42318' : type === 'ok' ? '#067647' : '';
-      };
-
-      const updateBackupLast = () => {
-        if (!hasBackupUi || !backupLast) return;
-        backupLast.textContent = formatLastBackupLabel(loadBackupSettings().lastBackupAt);
-      };
-
-      const readBackupSettingsFromPanel = () => normalizeBackupSettings({
-        enabled: backupEnabled?.checked,
-        gistId: backupGistId?.value,
-        token: backupToken?.value,
-        fileName: backupFileName?.value,
-        autoBackupOnSave: backupAuto?.checked
-      });
-
-      if (hasBackupUi) {
-        const backupSettings = loadBackupSettings();
-        backupEnabled.checked = backupSettings.enabled;
-        backupGistId.value = backupSettings.gistId;
-        backupToken.value = backupSettings.token;
-        backupFileName.value = backupSettings.fileName;
-        backupAuto.checked = backupSettings.autoBackupOnSave;
-        updateBackupLast();
-
-        backupSend.addEventListener('click', async () => {
-          try {
-            const settings = saveBackupSettings(readBackupSettingsFromPanel());
-            showBackupStatus('Enviando backup...', '');
-            const signature = buildBackupSignature();
-            await pushBackupToGist(settings, buildExportPayload());
-            saveBackupSettings({ ...settings, lastBackupAt: new Date().toISOString(), lastBackupSignature: signature });
-            updateBackupLast();
-            showBackupStatus('Backup enviado com sucesso.', 'ok');
-          } catch (error) {
-            showBackupStatus(error instanceof Error ? error.message : 'Falha ao enviar backup.', 'err');
-          }
+        saveBackupSettings({
+          ...settings,
+          lastBackupSignature: JSON.stringify(state.store.items)
         });
-
-        backupRestore.addEventListener('click', async () => {
-          try {
-            const settings = saveBackupSettings(readBackupSettingsFromPanel());
-            showBackupStatus('Restaurando backup...', '');
-            const payload = await readBackupFromGist(settings);
-            state.store.items = payload && payload.items && typeof payload.items === 'object' ? payload.items : Object.create(null);
-            persistStore();
-            const signature = buildBackupSignature();
-            saveBackupSettings({ ...settings, lastBackupSignature: signature });
-            renderPanel();
-            renderTables();
-            showBackupStatus('Backup restaurado com sucesso.', 'ok');
-          } catch (error) {
-            showBackupStatus(error instanceof Error ? error.message : 'Falha ao restaurar backup.', 'err');
-          }
-        });
-
-        backupClear.addEventListener('click', () => {
-          saveBackupSettings(DEFAULT_BACKUP_SETTINGS);
-          backupEnabled.checked = false;
-          backupGistId.value = '';
-          backupToken.value = '';
-          backupFileName.value = SCRIPT_META.fileName;
-          backupAuto.checked = false;
-          updateBackupLast();
-          showBackupStatus('Configuracao de backup limpa.', 'ok');
-        });
+        refreshFrameContext('backup-restore');
+        setNodeText(statusNode, 'Backup restaurado com sucesso.');
+        renderModal();
+      } catch (error) {
+        setNodeText(statusNode, error instanceof Error ? error.message : 'Falha ao restaurar backup.');
       }
+    });
 
-      document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && state.store.ui.panelOpen) {
-          state.store.ui.panelOpen = false;
-          persistStore();
-          updatePanelVisibility();
-        }
-      }, { passive: true });
-    }
-
-    updatePanelVisibility();
+    body.querySelector('[data-role="backup-clear"]')?.addEventListener('click', () => {
+      saveBackupSettings(BACKUP_DEFAULTS);
+      renderModal();
+    });
   }
 
-  function updatePanelVisibility() {
-    const overlay = document.getElementById(PANEL_OVERLAY_ID);
-    if (!overlay) return;
-    overlay.dataset.open = state.store.ui.panelOpen ? 'true' : 'false';
-    if (state.store.ui.panelOpen) {
-      renderPanel();
-    }
+  /**
+   * Lê configuracoes de backup a partir do modal.
+   * @param {Element} root
+   * @returns {typeof BACKUP_DEFAULTS}
+   */
+  function readBackupSettingsFromModal(root) {
+    return normalizeBackupSettings({
+      enabled: /** @type {HTMLInputElement | null} */ (root.querySelector('[data-role="backup-enabled"]'))?.checked,
+      gistId: /** @type {HTMLInputElement | null} */ (root.querySelector('[data-role="backup-gist-id"]'))?.value,
+      token: /** @type {HTMLInputElement | null} */ (root.querySelector('[data-role="backup-token"]'))?.value,
+      fileName: /** @type {HTMLInputElement | null} */ (root.querySelector('[data-role="backup-file-name"]'))?.value,
+      autoBackupOnSave: /** @type {HTMLInputElement | null} */ (root.querySelector('[data-role="backup-auto"]'))?.checked
+    });
   }
 
-  function renderPanel() {
-    if (!state.panel) return;
-    const searchInput = state.panel.querySelector('.pjim-panel__search');
-    const hideDoneInput = state.panel.querySelector('[data-role="hide-done"]');
-    const onlyMarkedInput = state.panel.querySelector('[data-role="only-marked-page"]');
-    const backupEnabled = state.panel.querySelector('[data-role="backup-enabled"]');
-    const backupGistId = state.panel.querySelector('[data-role="backup-gist-id"]');
-    const backupToken = state.panel.querySelector('[data-role="backup-token"]');
-    const backupFileName = state.panel.querySelector('[data-role="backup-file-name"]');
-    const backupAuto = state.panel.querySelector('[data-role="backup-auto"]');
-    const backupLast = state.panel.querySelector('[data-role="backup-last"]');
-    const meta = state.panel.querySelector('.pjim-panel__meta');
-    const list = state.panel.querySelector('.pjim-list');
-    if (!list || !meta) return;
+  /**
+   * Renderiza o modal apenas quando aberto.
+   */
+  function renderModal() {
+    ensureModal();
+    if (!state.modalRoot) return;
 
+    state.modalRoot.dataset.open = state.modalOpen ? 'true' : 'false';
+    if (!state.modalOpen) return;
+
+    const root = state.modalRoot;
     const backupSettings = loadBackupSettings();
-    if (searchInput) searchInput.value = state.store.ui.query;
-    if (hideDoneInput) hideDoneInput.checked = state.store.ui.hideDone;
-    if (onlyMarkedInput) onlyMarkedInput.checked = state.store.ui.onlyMarkedOnPage;
-    if (backupEnabled) backupEnabled.checked = backupSettings.enabled;
-    if (backupGistId) backupGistId.value = backupSettings.gistId;
-    if (backupToken) backupToken.value = backupSettings.token;
-    if (backupFileName) backupFileName.value = backupSettings.fileName;
-    if (backupAuto) backupAuto.checked = backupSettings.autoBackupOnSave;
-    if (backupLast) backupLast.textContent = formatLastBackupLabel(backupSettings.lastBackupAt);
+    setInputValue(root.querySelector('[data-role="search"]'), state.store.ui.query);
+    setChecked(root.querySelector('[data-role="hide-done"]'), state.store.ui.hideDone);
+    setChecked(root.querySelector('[data-role="only-marked-page"]'), state.store.ui.onlyMarkedOnPage);
+    setChecked(root.querySelector('[data-role="backup-enabled"]'), backupSettings.enabled);
+    setChecked(root.querySelector('[data-role="backup-auto"]'), backupSettings.autoBackupOnSave);
+    setInputValue(root.querySelector('[data-role="backup-gist-id"]'), backupSettings.gistId);
+    setInputValue(root.querySelector('[data-role="backup-token"]'), backupSettings.token);
+    setInputValue(root.querySelector('[data-role="backup-file-name"]'), backupSettings.fileName);
+    setNodeText(root.querySelector('[data-role="backup-last"]'), formatLastBackupLabel(backupSettings.lastBackupAt));
 
     const items = getFilteredItems();
-    meta.textContent = `${items.length} item(ns) visivel(is) • ${Object.keys(state.store.items).length} intimacao(oes) marcada(s).`;
+    setNodeText(
+      root.querySelector('[data-role="meta"]'),
+      `${items.length} item(ns) visivel(is) • ${Object.keys(state.store.items).length} intimacao(oes) marcada(s).`
+    );
 
-    list.replaceChildren();
+    const listNode = root.querySelector('[data-role="list"]');
+    if (!listNode) return;
+    listNode.replaceChildren();
+
     if (!items.length) {
       const empty = document.createElement('div');
-      empty.className = 'pjim-empty';
+      empty.className = 'pjip-empty';
       empty.textContent = 'Nenhuma intimacao marcada para este filtro.';
-      list.appendChild(empty);
+      listNode.appendChild(empty);
       return;
     }
 
     const fragment = document.createDocumentFragment();
-    items.forEach((item) => {
-      const card = document.createElement('article');
-      card.className = `pjim-card${item.done ? ' pjim-card--done' : ''}`;
-
-      const top = document.createElement('div');
-      top.className = 'pjim-card__top';
-
-      const id = document.createElement('div');
-      id.className = 'pjim-card__id';
-      id.textContent = item.id;
-
-      const pill = document.createElement('div');
-      pill.className = `pjim-pill ${resolvePillClass(item)}`.trim();
-      pill.textContent = resolvePillLabel(item);
-      top.append(id, pill);
-
-      const grid = document.createElement('div');
-      grid.className = 'pjim-card__grid';
-      grid.innerHTML = `
-        <div class="pjim-card__line"><strong>Processo:</strong> ${escapeHtml(item.processNumber || '—')}</div>
-        <div class="pjim-card__line"><strong>Prazo:</strong> ${escapeHtml(item.deadline || '—')}</div>
-        <div class="pjim-card__line"><strong>Origem:</strong> ${escapeHtml(item.sourceLegend || item.type || 'Intimacao')}</div>
-        <div class="pjim-card__movement">${escapeHtml(item.movement || '—')}</div>
-      `;
-
-      const actions = document.createElement('div');
-      actions.className = 'pjim-card__actions';
-
-      const doneButton = document.createElement('button');
-      doneButton.type = 'button';
-      doneButton.className = 'pjim-card__action pjim-card__action--primary';
-      doneButton.textContent = item.done ? 'Reabrir' : 'Concluir';
-      doneButton.addEventListener('click', () => toggleDone(item.id));
-
-      const openProcess = document.createElement('button');
-      openProcess.type = 'button';
-      openProcess.className = 'pjim-card__action';
-      openProcess.textContent = 'Abrir processo';
-      openProcess.disabled = !item.processLink;
-      openProcess.addEventListener('click', () => openProcessFromPanel(item));
-
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'pjim-card__action';
-      remove.textContent = 'Remover';
-      remove.addEventListener('click', () => {
-        delete state.store.items[item.id];
-        persistStore();
-        renderPanel();
-        renderTables();
-      });
-
-      actions.append(doneButton, openProcess, remove);
-      card.append(top, grid, actions);
-      fragment.appendChild(card);
-    });
-
-    list.appendChild(fragment);
+    for (const item of items) {
+      fragment.appendChild(buildModalItem(item));
+    }
+    listNode.appendChild(fragment);
   }
 
+  /**
+   * Constroi um item do painel.
+   * @param {any} item
+   * @returns {HTMLElement}
+   */
+  function buildModalItem(item) {
+    const card = document.createElement('article');
+    card.className = `pjip-item${item.done ? ' pjip-item--done' : ''}`;
+
+    const top = document.createElement('div');
+    top.className = 'pjip-item-top';
+
+    const idNode = document.createElement('div');
+    idNode.className = 'pjip-item-id';
+    idNode.textContent = String(item.id || '');
+
+    const statusNode = document.createElement('div');
+    statusNode.className = `pjip-item-status ${resolveItemStatusClass(item)}`.trim();
+    statusNode.textContent = resolveItemStatusLabel(item);
+    top.append(idNode, statusNode);
+
+    const grid = document.createElement('div');
+    grid.className = 'pjip-item-grid';
+    appendLabeledValue(grid, 'Processo', item.processNumber || '—');
+    appendLabeledValue(grid, 'Prazo', item.deadline || '—');
+    appendLabeledValue(grid, 'Origem', item.sourceLegend || item.kind || 'Intimacao');
+    const movement = document.createElement('div');
+    movement.textContent = item.movement || '—';
+    grid.appendChild(movement);
+
+    const actions = document.createElement('div');
+    actions.className = 'pjip-item-actions';
+
+    const doneButton = document.createElement('button');
+    doneButton.type = 'button';
+    doneButton.className = 'pjip-modal-btn pjip-modal-btn--primary';
+    doneButton.textContent = item.done ? 'Reabrir' : 'Concluir';
+    doneButton.addEventListener('click', () => {
+      toggleDone(String(item.id));
+      renderModal();
+    });
+
+    const openProcessButton = document.createElement('button');
+    openProcessButton.type = 'button';
+    openProcessButton.className = 'pjip-modal-btn';
+    openProcessButton.textContent = 'Abrir processo';
+    openProcessButton.disabled = !item.processLink;
+    openProcessButton.addEventListener('click', () => {
+      openProcess(item);
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'pjip-modal-btn';
+    removeButton.textContent = 'Remover';
+    removeButton.addEventListener('click', () => {
+      delete state.store.items[item.id];
+      persistStore();
+      refreshFrameContext('modal-remove');
+      renderModal();
+    });
+
+    actions.append(doneButton, openProcessButton, removeButton);
+    card.append(top, grid, actions);
+    return card;
+  }
+
+  /**
+   * Adiciona uma linha com rotulo e valor.
+   * @param {HTMLElement} container
+   * @param {string} label
+   * @param {string} value
+   */
+  function appendLabeledValue(container, label, value) {
+    const line = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = `${label}: `;
+    line.appendChild(strong);
+    line.appendChild(document.createTextNode(value));
+    container.appendChild(line);
+  }
+
+  /**
+   * Filtra os itens marcados para exibicao.
+   * @returns {any[]}
+   */
   function getFilteredItems() {
     const query = normalizeText(state.store.ui.query);
     const items = Object.values(state.store.items).filter((item) => {
       if (state.store.ui.hideDone && item.done) return false;
       if (!query) return true;
-      const haystack = normalizeText([
-        item.id,
-        item.processNumber,
-        item.deadline,
-        item.movement,
-        item.sourceLegend
-      ].join(' '));
+      const haystack = normalizeText([item.id, item.processNumber, item.deadline, item.movement, item.sourceLegend].join(' '));
       return haystack.includes(query);
     });
 
-    return items.sort((left, right) => {
-      const leftTime = parseDateTime(left.deadline) || Number.MAX_SAFE_INTEGER;
-      const rightTime = parseDateTime(right.deadline) || Number.MAX_SAFE_INTEGER;
+    items.sort((left, right) => {
+      const leftTime = parseBrazilianDateTime(left.deadline) || Number.MAX_SAFE_INTEGER;
+      const rightTime = parseBrazilianDateTime(right.deadline) || Number.MAX_SAFE_INTEGER;
       if (left.done !== right.done) return left.done ? 1 : -1;
       if (leftTime !== rightTime) return leftTime - rightTime;
       return String(left.id).localeCompare(String(right.id), 'pt-BR', { numeric: true });
     });
+
+    return items;
   }
 
-  function resolvePillClass(item) {
-    if (item.done) return 'pjim-pill--done';
-    const deadlineTime = parseDateTime(item.deadline);
-    if (!deadlineTime) return '';
+  /**
+   * Resolve classe do status.
+   * @param {any} item
+   * @returns {string}
+   */
+  function resolveItemStatusClass(item) {
+    if (item.done) return 'pjip-item-status--done';
+    const time = parseBrazilianDateTime(item.deadline);
+    if (!time) return '';
     const now = Date.now();
-    if (deadlineTime < now) return 'pjim-pill--late';
-    if (deadlineTime - now <= 2 * 24 * 60 * 60 * 1000) return 'pjim-pill--soon';
+    if (time < now) return 'pjip-item-status--late';
+    if (time - now <= 2 * 24 * 60 * 60 * 1000) return 'pjip-item-status--soon';
     return '';
   }
 
-  function resolvePillLabel(item) {
+  /**
+   * Resolve rotulo do status.
+   * @param {any} item
+   * @returns {string}
+   */
+  function resolveItemStatusLabel(item) {
     if (item.done) return 'Concluida';
-    const deadlineTime = parseDateTime(item.deadline);
-    if (!deadlineTime) return 'Sem prazo';
+    const time = parseBrazilianDateTime(item.deadline);
+    if (!time) return 'Sem prazo';
     const now = Date.now();
-    if (deadlineTime < now) return 'Vencida';
-    if (deadlineTime - now <= 2 * 24 * 60 * 60 * 1000) return 'Vencendo';
+    if (time < now) return 'Vencida';
+    if (time - now <= 2 * 24 * 60 * 60 * 1000) return 'Vencendo';
     return 'Aberta';
   }
 
-  function openProcessFromPanel(item) {
-    state.store.ui.panelOpen = false;
-    persistStore();
-    updatePanelVisibility();
-    const targetDoc = getActiveDocument();
-    const processAction = findProcessActionElement(targetDoc, item.id);
-    if (processAction && typeof processAction.click === 'function') {
-      safeRun('Falha ao acionar o link nativo do processo.', () => {
-        processAction.click();
-      });
-      return;
-    }
-    navigateTo(item.processLink);
-  }
-
-  function findProcessActionElement(targetDoc, intimationId) {
-    if (!targetDoc || !intimationId) return null;
-    for (const table of findRelevantTables(targetDoc)) {
-      const headerMap = getHeaderMap(table);
-      for (const tbody of Array.from(table.tBodies)) {
-        for (const row of Array.from(tbody.rows)) {
-          const rowData = extractRowData(row, headerMap);
-          if (!rowData || rowData.id !== intimationId) continue;
-          const cells = Array.from(row.children);
-          return findNavigationElement(
-            cells[headerMap.processo],
-            'a[href*="BuscaProcesso"], button[onclick*="BuscaProcesso"], [onclick*="BuscaProcesso"]'
-          );
+  /**
+   * Tenta abrir o processo a partir da linha atual. Se nao encontrar, navega pela URL.
+   * @param {any} item
+   */
+  function openProcess(item) {
+    closeModal();
+    const doc = state.frameDoc;
+    if (doc && item.id) {
+      for (const tableEntry of state.pageContext?.markTables || []) {
+        const { table, headerMap, legend } = tableEntry;
+        for (const body of Array.from(table.tBodies)) {
+          for (const row of Array.from(body.rows)) {
+            const rowData = extractRowData(row, headerMap, legend);
+            if (!rowData || rowData.id !== item.id) continue;
+            const processAction = findNavigationElement(row.children[headerMap.process], SELECTORS.processAction);
+            if (processAction && typeof processAction.click === 'function') {
+              processAction.click();
+              return;
+            }
+          }
         }
       }
     }
-    return null;
+
+    navigateFrameTo(item.processLink);
   }
 
-  function navigateTo(href) {
-    if (!href) return;
-    const target = resolveUrl(href);
-    if (!target) return;
-    const iframe = document.querySelector(MAIN_IFRAME_SELECTOR);
-    if (iframe) {
-      state.iframe = iframe;
-      bindIframe();
-      safeRun('Falha ao navegar no iframe principal para a URL da intimacao.', () => {
-        const frameWindow = iframe.contentWindow || window.frames.userMainFrame || window.frames.Principal || null;
-        if (frameWindow && frameWindow.location) {
-          try {
-            frameWindow.location.replace('about:blank');
-            window.setTimeout(() => {
-              frameWindow.location.href = target;
-            }, 80);
-            return;
-          } catch (_) {}
-        }
-        iframe.setAttribute('src', 'about:blank');
-        window.setTimeout(() => {
-          iframe.setAttribute('src', target);
-        }, 80);
-      });
+  /**
+   * Navega o iframe principal com seguranca.
+   * @param {string} href
+   */
+  function navigateFrameTo(href) {
+    const resolved = resolveAllowedUrl(href, state.frameDoc?.location?.href || window.location.href);
+    if (!resolved) return;
+
+    if (state.frame && state.frame.contentWindow) {
+      try {
+        state.frame.contentWindow.location.href = resolved;
+        return;
+      } catch (error) {
+        logWarn('Falha ao navegar diretamente no iframe. Sera usado src.', error);
+      }
+      state.frame.setAttribute('src', resolved);
       return;
     }
-    window.location.assign(target);
+
+    window.location.assign(resolved);
   }
 
-  function resolveUrl(href, baseUrl = '') {
+  /**
+   * Resolve URLs navegaveis e bloqueia esquemas inseguros.
+   * @param {string} href
+   * @param {string} baseUrl
+   * @returns {string}
+   */
+  function resolveAllowedUrl(href, baseUrl) {
+    if (!href) return '';
     try {
-      let normalizedHref = String(href || '').trim().replace(/^['"]|['"]$/g, '');
-      if (!normalizedHref) return '';
-      if (!/^(https?:|\/)/i.test(normalizedHref)) {
-        normalizedHref = `/${normalizedHref}`;
-      }
-      const effectiveBase = baseUrl || state.targetDocument?.location?.href || window.location.href;
-      return new URL(normalizedHref, effectiveBase).toString();
+      const cleaned = String(href).trim().replace(/^['"]|['"]$/g, '');
+      const url = new URL(/^(https?:|\/)/i.test(cleaned) ? cleaned : `/${cleaned}`, baseUrl);
+      if (!/^https?:$/i.test(url.protocol)) return '';
+      return url.toString();
     } catch (error) {
-      logWarn('Nao foi possivel resolver a URL da intimacao.', { href, error });
+      logWarn('Nao foi possivel resolver URL segura.', { href, error });
       return '';
     }
   }
 
-  function findNavigationElement(root, preferredSelector = '') {
-    if (!root || !(root instanceof Element)) return null;
-    if (preferredSelector) {
-      const preferred = root.querySelector(preferredSelector);
-      if (preferred) return preferred;
-    }
-    return root.querySelector('a[href], button[onclick], [onclick], [href]') || null;
+  /**
+   * Busca um elemento de navegacao dentro de um container.
+   * @param {ParentNode | null | undefined} root
+   * @param {string} preferredSelector
+   * @returns {Element | null}
+   */
+  function findNavigationElement(root, preferredSelector) {
+    if (!root || typeof root.querySelector !== 'function') return null;
+    return root.querySelector(preferredSelector) || root.querySelector('a[href], button[onclick], [onclick], [href]');
   }
 
-  function extractTargetFromElement(element, baseUrl = '') {
-    if (!element || !(element instanceof Element)) return '';
+  /**
+   * Extrai URL a partir de href ou onclick.
+   * @param {Element | null} element
+   * @param {string} baseUrl
+   * @returns {string}
+   */
+  function extractNavigableUrl(element, baseUrl) {
+    if (!element) return '';
     const href = element.getAttribute('href');
-    const rawTarget = href ? href.replace(/&amp;/g, '&') : extractHref(element.getAttribute('onclick'));
-    if (!rawTarget) return '';
-    return resolveUrl(rawTarget, baseUrl);
+    const onclick = element.getAttribute('onclick');
+    const raw = href ? href.replace(/&amp;/g, '&') : extractHrefFromOnclick(onclick);
+    return resolveAllowedUrl(raw, baseUrl);
   }
 
-  function extractHref(onclickValue) {
+  /**
+   * Extrai href a partir de handlers inline conhecidos.
+   * @param {string | null} onclickValue
+   * @returns {string}
+   */
+  function extractHrefFromOnclick(onclickValue) {
     if (!onclickValue) return '';
     const locationMatch = onclickValue.match(/(?:window\.)?location\.href\s*=\s*['"]([^'"]+)['"]/i);
     if (locationMatch) return locationMatch[1].replace(/&amp;/g, '&');
@@ -2211,19 +2391,76 @@
     return genericMatch ? genericMatch[1].replace(/&amp;/g, '&') : '';
   }
 
+  /**
+   * Retorna texto de uma celula.
+   * @param {Element | undefined} cell
+   * @returns {string}
+   */
   function getCellText(cell) {
     return normalizeSpaces(cell?.textContent || '');
   }
 
-  function bindInlineAction(element, handler) {
-    element.addEventListener('click', handler);
-    element.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      handler();
-    });
+  /**
+   * Localiza a melhor tabela principal.
+   * @param {ParentNode} root
+   * @returns {HTMLTableElement | null}
+   */
+  function findBestMainTable(root) {
+    const tables = Array.from(root.querySelectorAll(SELECTORS.table));
+    let best = null;
+    let bestScore = -1;
+
+    for (const candidate of tables) {
+      const table = /** @type {HTMLTableElement} */ (candidate);
+      const score = scoreMainTable(table, createHeaderMap(table));
+      if (score > bestScore) {
+        bestScore = score;
+        best = table;
+      }
+    }
+
+    return best;
   }
 
+  /**
+   * Gera nome de arquivo com timestamp.
+   * @param {string} baseName
+   * @param {string} extension
+   * @returns {string}
+   */
+  function buildTimestampedFileName(baseName, extension) {
+    const now = new Date();
+    const parts = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0')
+    ];
+    const time = [String(now.getHours()).padStart(2, '0'), String(now.getMinutes()).padStart(2, '0')].join('-');
+    return `${baseName}_${parts.join('-')}_${time}.${extension}`;
+  }
+
+  /**
+   * Dispara download de blob.
+   * @param {Blob} blob
+   * @param {string} fileName
+   */
+  function triggerDownload(blob, fileName) {
+    const anchor = document.createElement('a');
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    window.setTimeout(() => {
+      URL.revokeObjectURL(anchor.href);
+      anchor.remove();
+    }, 800);
+  }
+
+  /**
+   * Normaliza texto com remoção de acentos e lowercase.
+   * @param {string} value
+   * @returns {string}
+   */
   function normalizeText(value) {
     return normalizeSpaces(value)
       .normalize('NFD')
@@ -2231,12 +2468,45 @@
       .toLowerCase();
   }
 
+  /**
+   * Compacta espacos em branco.
+   * @param {string} value
+   * @returns {string}
+   */
   function normalizeSpaces(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
-  function parseDateTime(value) {
-    const match = String(value || '').match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$/);
+  /**
+   * Faz escape CSV.
+   * @param {string} value
+   * @returns {string}
+   */
+  function escapeCsv(value) {
+    let normalized = String(value || '').replace(/\r?\n|\r/g, ' ').trim();
+    if (/[;"\n]/.test(normalized)) normalized = `"${normalized.replace(/"/g, '""')}"`;
+    return normalized;
+  }
+
+  /**
+   * Formata o rotulo de ultimo backup.
+   * @param {string} isoDate
+   * @returns {string}
+   */
+  function formatLastBackupLabel(isoDate) {
+    if (!isoDate) return 'Ultimo backup: ainda nao enviado.';
+    const date = new Date(isoDate);
+    if (Number.isNaN(date.getTime())) return 'Ultimo backup: ainda nao enviado.';
+    return `Ultimo backup: ${date.toLocaleString('pt-BR')}.`;
+  }
+
+  /**
+   * Faz parse de data/hora no formato brasileiro.
+   * @param {string} value
+   * @returns {number}
+   */
+  function parseBrazilianDateTime(value) {
+    const match = String(value || '').match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
     if (!match) return 0;
     const [, day, month, year, hour = '0', minute = '0', second = '0'] = match;
     return new Date(
@@ -2249,12 +2519,78 @@
     ).getTime();
   }
 
-  function escapeHtml(value) {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+  /**
+   * Atualiza o valor de um input.
+   * @param {Element | null} element
+   * @param {string} value
+   */
+  function setInputValue(element, value) {
+    if (element instanceof HTMLInputElement) element.value = value;
+  }
+
+  /**
+   * Atualiza o estado checked de um input.
+   * @param {Element | null} element
+   * @param {boolean} value
+   */
+  function setChecked(element, value) {
+    if (element instanceof HTMLInputElement) element.checked = value;
+  }
+
+  /**
+   * Atualiza texto de um no.
+   * @param {Element | null} element
+   * @param {string} value
+   */
+  function setNodeText(element, value) {
+    if (element) element.textContent = value;
+  }
+
+  /**
+   * Extrai ultimo numero de uma string.
+   * @param {string | null} value
+   * @returns {number | null}
+   */
+  function extractLastNumber(value) {
+    if (!value) return null;
+    const match = value.match(/(\d+)\D*\)?\s*$/);
+    return match ? Number.parseInt(match[1], 10) : null;
+  }
+
+  /**
+   * Extrai pageSize do href do paginador.
+   * @param {Element} pagerElement
+   * @returns {number | null}
+   */
+  function extractSecondNumberFromPager(pagerElement) {
+    const link = pagerElement.querySelector('a[href^="javascript:buscaDados("]');
+    if (!link) return null;
+    const match = link.getAttribute('href')?.match(/buscaDados\(\s*\d+\s*,\s*(\d+)\s*\)/i);
+    return match ? Number.parseInt(match[1], 10) : null;
+  }
+
+  /**
+   * Cria seletor CSS relativamente estavel.
+   * @param {Element} element
+   * @returns {string}
+   */
+  function buildCssPath(element) {
+    const segments = [];
+    for (let current = element; current && current.nodeType === 1; current = current.parentElement) {
+      let segment = current.nodeName.toLowerCase();
+      if (current.id) {
+        segment += `#${CSS.escape(current.id)}`;
+        segments.unshift(segment);
+        break;
+      }
+      let index = 1;
+      let sibling = current;
+      while ((sibling = sibling.previousElementSibling)) {
+        if (sibling.nodeName === current.nodeName) index += 1;
+      }
+      segment += `:nth-of-type(${index})`;
+      segments.unshift(segment);
+    }
+    return segments.join(' > ');
   }
 })();
