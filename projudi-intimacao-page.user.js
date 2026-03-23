@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Intimacoes
+// @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.3
+// @version      3.4
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
-// @description  Reune intimações em uma pagina, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memoria.
+// @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
 // @license      CC BY-NC 4.0
 // @updateURL    https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
@@ -22,12 +22,12 @@
 
   if (window.top !== window.self) return;
 
-  const SCRIPT_NAME = 'Intimacoes';
+  const SCRIPT_NAME = 'Intimações';
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.3';
-  const LOG_PREFIX = '[Intimacoes]';
+      : '3.4';
+  const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
     mainFrame: 'iframe#Principal, iframe[name="userMainFrame"]',
@@ -71,7 +71,8 @@
     tableContext: Symbol('tableContext'),
     frameHooks: Symbol('frameHooks'),
     patchFlag: Symbol('patchFlag'),
-    refreshToken: Symbol('refreshToken')
+    refreshToken: Symbol('refreshToken'),
+    rowSignature: Symbol('rowSignature')
   };
 
   const PDF_CDNS = {
@@ -129,7 +130,6 @@
     attachHostHooks();
     registerMenuCommand();
     bindMainFrame();
-    refreshFrameContext('init');
   }
 
   /**
@@ -311,14 +311,6 @@
     const target = resolveEventElement(event.target);
     if (!target) return;
 
-    const actionButton = target.closest('[data-pjip-action]');
-    if (actionButton) {
-      event.preventDefault();
-      event.stopPropagation();
-      handleInlineAction(actionButton);
-      return;
-    }
-
     const pagerAction = target.closest(SELECTORS.pagerClickable);
     if (pagerAction) {
       scheduleRefreshBurst('pager-click');
@@ -401,7 +393,8 @@
   function analyzeFrameContext(frame, doc) {
     const title = normalizeSpaces(doc.querySelector(SELECTORS.title)?.textContent || '');
     const url = safeRun('Falha ao ler URL do iframe.', () => frame.contentWindow?.location?.href || doc.location.href, '') || '';
-    const tables = Array.from(doc.querySelectorAll(SELECTORS.table));
+    const relevantTables = Array.from(doc.querySelectorAll(SELECTORS.relevantTable));
+    const tables = relevantTables.length ? relevantTables : Array.from(doc.querySelectorAll(SELECTORS.table));
 
     let mainTable = null;
     let mainScore = -1;
@@ -579,6 +572,10 @@
     }
 
     const item = state.store.items[rowData.id] || null;
+    const rowSignature = `${rowData.id}|${item ? 1 : 0}|${item?.done ? 1 : 0}|${state.store.ui.onlyMarkedOnPage ? 1 : 0}`;
+    if (row[PRIVATE.rowSignature] === rowSignature) return;
+    row[PRIVATE.rowSignature] = rowSignature;
+
     row.classList.toggle('pjip-row--marked', Boolean(item));
     row.classList.toggle('pjip-row--done', Boolean(item && item.done));
     row.classList.toggle('pjip-row--hidden', Boolean(state.store.ui.onlyMarkedOnPage && !markedIds.has(rowData.id)));
@@ -596,30 +593,45 @@
     }
 
     host.replaceChildren(
-      buildInlineButton(row.ownerDocument, 'toggle-mark', rowData.id, item ? '★' : '☆', item ? 'Remover das minhas intimacoes' : 'Marcar como minha'),
-      buildInlineButton(row.ownerDocument, 'toggle-done', rowData.id, '✓', item ? (item.done ? 'Reabrir intimacao' : 'Marcar como concluida') : 'Marque primeiro como sua', !item)
+      buildInlineButton(
+        row.ownerDocument,
+        item ? '★' : '☆',
+        item ? 'Remover das minhas intimações' : 'Marcar como minha',
+        () => toggleMarked(rowData)
+      ),
+      buildInlineButton(
+        row.ownerDocument,
+        '✓',
+        item ? (item.done ? 'Reabrir intimação' : 'Marcar como concluída') : 'Marque primeiro como sua',
+        () => toggleDone(rowData.id),
+        !item
+      )
     );
   }
 
   /**
-   * Cria um botao inline sem listener proprio.
+   * Cria um botao inline com binding direto para garantir confiabilidade do clique.
    * @param {Document} doc
-   * @param {string} action
-   * @param {string} itemId
    * @param {string} label
    * @param {string} title
+   * @param {() => void} onClick
    * @param {boolean=} disabled
    * @returns {HTMLButtonElement}
    */
-  function buildInlineButton(doc, action, itemId, label, title, disabled = false) {
+  function buildInlineButton(doc, label, title, onClick, disabled = false) {
     const button = doc.createElement('button');
     button.type = 'button';
     button.className = 'pjip-inline-btn';
-    button.dataset.pjipAction = action;
-    button.dataset.pjipId = itemId;
     button.textContent = label;
     button.title = title;
     button.disabled = disabled;
+    if (!disabled) {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
+    }
     return button;
   }
 
@@ -663,40 +675,13 @@
       processNumber,
       processLink,
       movement,
-      kind: headerMap.kind >= 0 ? getCellText(cells[headerMap.kind]) : 'Intimacao',
+      kind: headerMap.kind >= 0 ? getCellText(cells[headerMap.kind]) : 'Intimação',
       observedAt: headerMap.baseDate >= 0 ? getCellText(cells[headerMap.baseDate]) : '',
       deadline: headerMap.deadline >= 0 ? getCellText(cells[headerMap.deadline]) : '',
       sourceLegend: legend,
       nativeMarkHref,
       isNativeDone: /finalizada=true/i.test(nativeMarkHref)
     };
-  }
-
-  /**
-   * Reage aos botoes inline das linhas.
-   * @param {Element} actionButton
-   */
-  function handleInlineAction(actionButton) {
-    const action = actionButton.dataset.pjipAction || '';
-    const itemId = actionButton.dataset.pjipId || '';
-    if (!action || !itemId) return;
-
-    if (action === 'toggle-done') {
-      toggleDone(itemId);
-      return;
-    }
-
-    if (action === 'toggle-mark') {
-      const row = actionButton.closest('tr');
-      const table = row?.closest('table');
-      const headerMap = table?.[PRIVATE.tableContext];
-      const legend = normalizeSpaces(table?.closest('fieldset')?.querySelector('legend')?.textContent || '');
-      if (!row || !headerMap) return;
-
-      const rowData = extractRowData(/** @type {HTMLTableRowElement} */ (row), headerMap, legend);
-      if (!rowData) return;
-      toggleMarked(rowData);
-    }
   }
 
   /**
@@ -903,7 +888,7 @@
   function githubRequest(options) {
     return new Promise((resolve, reject) => {
       if (typeof GM_xmlhttpRequest !== 'function') {
-        reject(new Error('GM_xmlhttpRequest nao esta disponivel.'));
+        reject(new Error('GM_xmlhttpRequest não está disponível.'));
         return;
       }
 
@@ -990,7 +975,7 @@
 
     const gist = JSON.parse(response.responseText || '{}');
     const file = gist?.files?.[settings.fileName];
-    if (!file?.content) throw new Error('Arquivo de backup nao encontrado no Gist.');
+    if (!file?.content) throw new Error('Arquivo de backup não encontrado no Gist.');
     return JSON.parse(file.content);
   }
 
@@ -1006,7 +991,7 @@
       });
     }
 
-    state.menuCommandId = GM_registerMenuCommand('Gerenciar intimacoes', () => {
+    state.menuCommandId = GM_registerMenuCommand('Gerenciar intimações', () => {
       openModal();
     });
   }
@@ -1397,20 +1382,20 @@
 
     const head = document.createElement('div');
     head.className = 'pjip-actions-head';
-    head.textContent = 'Acoes de Intimacoes';
+    head.textContent = 'Ações de Intimações';
 
     const body = document.createElement('div');
     body.className = 'pjip-actions-body';
 
-    body.appendChild(buildMenuButton('Carregar todas as paginas', () => unifyPages(null)));
-    body.appendChild(buildMenuButton('Carregar 10 paginas', () => unifyPages(10)));
+    body.appendChild(buildMenuButton('Carregar todas as páginas', () => unifyPages(null)));
+    body.appendChild(buildMenuButton('Carregar 10 páginas', () => unifyPages(10)));
     body.appendChild(
-      buildMenuButton('Carregar X paginas', () => {
-        const raw = window.prompt('Quantas paginas deseja carregar?', '20');
+      buildMenuButton('Carregar X páginas', () => {
+        const raw = window.prompt('Quantas páginas deseja carregar?', '20');
         if (raw === null) return;
         const amount = Number.parseInt(String(raw).trim(), 10);
         if (!Number.isFinite(amount) || amount < 1) {
-          window.alert('Informe um numero inteiro maior que 0.');
+          window.alert('Informe um número inteiro maior que 0.');
           return;
         }
         unifyPages(amount);
@@ -1422,7 +1407,7 @@
     body.appendChild(divider);
     body.appendChild(buildMenuButton('Exportar CSV', () => exportCSV()));
     body.appendChild(buildMenuButton('Exportar PDF', () => exportPDF()));
-    body.appendChild(buildMenuButton('Minhas intimacoes', () => openModal()));
+    body.appendChild(buildMenuButton('Minhas intimações', () => openModal()));
 
     panel.append(head, body);
 
@@ -1431,7 +1416,7 @@
     fab.className = 'pjip-fab';
     fab.type = 'button';
     fab.textContent = '+';
-    fab.setAttribute('aria-label', 'Abrir acoes de intimacoes');
+    fab.setAttribute('aria-label', 'Abrir ações de intimações');
     fab.addEventListener('click', () => {
       state.menuOpen = !state.menuOpen;
       updateActionPanelState();
@@ -1513,7 +1498,7 @@
   async function unifyPages(maxPages) {
     const context = state.pageContext;
     if (!context?.mainTable || !state.frame) {
-      window.alert('Tabela principal nao encontrada.');
+      window.alert('Tabela principal não encontrada.');
       return;
     }
 
@@ -1529,7 +1514,7 @@
       const pagerInfo = analyzePager(mainDoc, pager);
 
       if (!pagerInfo || pagerInfo.totalPages < 2) {
-        window.alert('Sem paginacao disponivel.');
+        window.alert('Sem paginação disponível.');
         return;
       }
 
@@ -1545,7 +1530,7 @@
         if (targetPage <= 1) return;
 
         for (let currentPage = 2; currentPage <= targetPage; currentPage += 1) {
-          setBusyButtonLabel(button, `Pagina ${currentPage}/${targetPage}...`);
+          setBusyButtonLabel(button, `Página ${currentPage}/${targetPage}...`);
           await navigateLoaderToPage(loader, currentPage, pagerInfo);
 
           const loaderDoc = loader.contentDocument;
@@ -1563,14 +1548,14 @@
           pager?.remove();
         }
 
-        showToast('Paginas reunidas com sucesso');
+        showToast('Páginas reunidas com sucesso');
         refreshFrameContext('unify-pages');
       } finally {
         loader.remove();
       }
     } catch (error) {
       logError('Falha ao unificar as paginas de intimacoes.', error);
-      window.alert('Nao foi possivel unificar as paginas.');
+      window.alert('Não foi possível unificar as páginas.');
     } finally {
       restoreBusyButton(button, originalText);
     }
@@ -1730,7 +1715,7 @@
   function exportCSV() {
     const table = state.pageContext?.mainTable;
     if (!table) {
-      window.alert('Tabela nao encontrada para exportacao.');
+      window.alert('Tabela não encontrada para exportação.');
       return;
     }
 
@@ -1758,7 +1743,7 @@
   function exportPDF() {
     const table = state.pageContext?.mainTable;
     if (!table) {
-      window.alert('Tabela nao encontrada para exportacao.');
+      window.alert('Tabela não encontrada para exportação.');
       return;
     }
 
@@ -1777,7 +1762,7 @@
 
     const jsPdfNamespace = window.jspdf;
     if (!jsPdfNamespace?.jsPDF || typeof jsPdfNamespace.jsPDF.API.autoTable !== 'function') {
-      throw new Error('Bibliotecas jsPDF indisponiveis.');
+      throw new Error('Bibliotecas jsPDF indisponíveis.');
     }
 
     const matrix = tableToMatrix(table);
@@ -1794,7 +1779,7 @@
     const pageWidth = doc.internal.pageSize.getWidth();
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(13);
-    doc.text('Intimacoes', 10, 10);
+    doc.text('Intimações', 10, 10);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.text(`Gerado em: ${now.toLocaleString('pt-BR')}`, 10, 15);
@@ -1828,7 +1813,7 @@
         const page = doc.internal.getNumberOfPages();
         doc.setFontSize(8);
         doc.setTextColor(90, 104, 124);
-        doc.text(`Pagina ${page}`, pageWidth - 24, doc.internal.pageSize.getHeight() - 4);
+        doc.text(`Página ${page}`, pageWidth - 24, doc.internal.pageSize.getHeight() - 4);
       }
     });
 
@@ -1850,14 +1835,14 @@
     const generatedAt = new Date().toLocaleString('pt-BR');
     printWindow.document.open();
     printWindow.document.write(
-      `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimacoes</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimacoes</h1><div class="meta">Gerado em: ${generatedAt}</div>${table.outerHTML}</body></html>`
+      `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Intimações</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#111}h1{font-size:18px;margin:0 0 8px}.meta{font-size:12px;margin-bottom:12px;color:#444}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #bbb;padding:6px;vertical-align:top}th{background:#f3f3f3}@media print{body{margin:10mm}}</style></head><body><h1>Intimações</h1><div class="meta">Gerado em: ${generatedAt}</div>${table.outerHTML}</body></html>`
     );
     printWindow.document.close();
     printWindow.focus();
     window.setTimeout(() => {
       printWindow.print();
     }, 250);
-    showToast('Impressao PDF aberta');
+    showToast('Impressão PDF aberta');
   }
 
   /**
@@ -1872,7 +1857,7 @@
       await loadScriptOnce(PDF_CDNS.jspdf);
       await loadScriptOnce(PDF_CDNS.autoTable);
       if (!window.jspdf?.jsPDF || typeof window.jspdf.jsPDF.API.autoTable !== 'function') {
-        throw new Error('Nao foi possivel carregar jsPDF/AutoTable.');
+        throw new Error('Não foi possível carregar jsPDF/AutoTable.');
       }
     })();
 
@@ -1978,7 +1963,7 @@
     panel.id = IDS.modalPanel;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-label', 'Gerenciar intimacoes');
+    panel.setAttribute('aria-label', 'Gerenciar intimações');
 
     const head = document.createElement('div');
     head.className = 'pjip-modal-head';
@@ -1986,10 +1971,10 @@
     const headText = document.createElement('div');
     const title = document.createElement('div');
     title.className = 'pjip-modal-title';
-    title.textContent = 'Minhas Intimacoes';
+    title.textContent = 'Minhas Intimações';
     const subtitle = document.createElement('div');
     subtitle.className = 'pjip-modal-subtitle';
-    subtitle.textContent = 'Triagem local com atualizacao sob demanda.';
+    subtitle.textContent = 'Triagem local com atualização sob demanda.';
     headText.append(title, subtitle);
 
     const closeButton = document.createElement('button');
@@ -2005,22 +1990,22 @@
     body.className = 'pjip-modal-body';
     body.innerHTML = `
       <section class="pjip-toolbar">
-        <input type="search" data-role="search" placeholder="Buscar intimacao, processo ou texto">
+        <input type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
         <div class="pjip-checks">
-          <label><input type="checkbox" data-role="hide-done"> Ocultar concluidas</label>
-          <label><input type="checkbox" data-role="only-marked-page"> Ocultar nao marcadas na pagina</label>
+          <label><input type="checkbox" data-role="hide-done"> Ocultar concluídas</label>
+          <label><input type="checkbox" data-role="only-marked-page"> Ocultar não marcadas na página</label>
         </div>
         <div class="pjip-toolbar-meta" data-role="meta"></div>
       </section>
       <section class="pjip-backup">
         <div><strong>Backup remoto</strong></div>
-        <div class="pjip-backup-meta">Use um unico Gist no GitHub com um arquivo exclusivo para este script.</div>
+        <div class="pjip-backup-meta">Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
         <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
         <input type="password" data-role="backup-token" placeholder="Token do GitHub">
         <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
         <div class="pjip-checks">
           <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
-          <label><input type="checkbox" data-role="backup-auto"> Backup automatico</label>
+          <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
         </div>
         <div class="pjip-backup-actions">
           <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
@@ -2149,7 +2134,7 @@
     const items = getFilteredItems();
     setNodeText(
       root.querySelector('[data-role="meta"]'),
-      `${items.length} item(ns) visivel(is) • ${Object.keys(state.store.items).length} intimacao(oes) marcada(s).`
+      `${items.length} item(ns) visível(is) • ${Object.keys(state.store.items).length} intimação(ões) marcada(s).`
     );
 
     const listNode = root.querySelector('[data-role="list"]');
@@ -2159,7 +2144,7 @@
     if (!items.length) {
       const empty = document.createElement('div');
       empty.className = 'pjip-empty';
-      empty.textContent = 'Nenhuma intimacao marcada para este filtro.';
+      empty.textContent = 'Nenhuma intimação marcada para este filtro.';
       listNode.appendChild(empty);
       return;
     }
@@ -2196,7 +2181,7 @@
     grid.className = 'pjip-item-grid';
     appendLabeledValue(grid, 'Processo', item.processNumber || '—');
     appendLabeledValue(grid, 'Prazo', item.deadline || '—');
-    appendLabeledValue(grid, 'Origem', item.sourceLegend || item.kind || 'Intimacao');
+    appendLabeledValue(grid, 'Origem', item.sourceLegend || item.kind || 'Intimação');
     const movement = document.createElement('div');
     movement.textContent = item.movement || '—';
     grid.appendChild(movement);
@@ -2298,7 +2283,7 @@
    * @returns {string}
    */
   function resolveItemStatusLabel(item) {
-    if (item.done) return 'Concluida';
+    if (item.done) return 'Concluída';
     const time = parseBrazilianDateTime(item.deadline);
     if (!time) return 'Sem prazo';
     const now = Date.now();
@@ -2528,10 +2513,10 @@
    * @returns {string}
    */
   function formatLastBackupLabel(isoDate) {
-    if (!isoDate) return 'Ultimo backup: ainda nao enviado.';
+    if (!isoDate) return 'Último backup: ainda não enviado.';
     const date = new Date(isoDate);
-    if (Number.isNaN(date.getTime())) return 'Ultimo backup: ainda nao enviado.';
-    return `Ultimo backup: ${date.toLocaleString('pt-BR')}.`;
+    if (Number.isNaN(date.getTime())) return 'Último backup: ainda não enviado.';
+    return `Último backup: ${date.toLocaleString('pt-BR')}.`;
   }
 
   /**
