@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.6
+// @version      3.7
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.6';
+      : '3.7';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -88,7 +88,10 @@
    * pageContext: ReturnType<typeof analyzeFrameContext> | null,
    * pageSignature: string,
    * refreshTimers: number[],
-   * pendingTeardownTimer: number,
+   * settleObserver: MutationObserver | null,
+   * settleDebounceTimer: number,
+   * settleStopTimer: number,
+   * isContextSettling: boolean,
    * refreshNonce: number,
    * menuCommandId: number | null,
    * hostHooksAttached: boolean,
@@ -109,7 +112,10 @@
     pageContext: null,
     pageSignature: '',
     refreshTimers: [],
-    pendingTeardownTimer: 0,
+    settleObserver: null,
+    settleDebounceTimer: 0,
+    settleStopTimer: 0,
+    isContextSettling: false,
     refreshNonce: 0,
     menuCommandId: null,
     hostHooksAttached: false,
@@ -260,6 +266,7 @@
 
     attachFrameHooks(state.frameDoc);
     patchFrameFunctions(state.frameWin);
+    beginContextSettlement(state.frameDoc);
     refreshFrameContext('frame-load');
   }
 
@@ -348,6 +355,70 @@
   }
 
   /**
+   * Inicia uma janela curta de estabilizacao apos carregamentos do iframe.
+   * O objetivo e capturar reconstrucoes tardias do DOM sem manter observer fixo.
+   * @param {Document} doc
+   */
+  function beginContextSettlement(doc) {
+    endContextSettlement(false);
+    state.isContextSettling = true;
+
+    const root = doc.getElementById('divTabela') || doc.getElementById('divCorpo') || doc.body || doc.documentElement;
+    if (root) {
+      state.settleObserver = new MutationObserver((mutations) => {
+        if (!hasSettlementMutation(mutations)) return;
+        window.clearTimeout(state.settleDebounceTimer);
+        state.settleDebounceTimer = window.setTimeout(() => {
+          state.settleDebounceTimer = 0;
+          if (state.frameDoc === doc) refreshFrameContext('settle-mutation');
+        }, 100);
+      });
+      state.settleObserver.observe(root, { childList: true, subtree: true });
+    }
+
+    state.settleStopTimer = window.setTimeout(() => {
+      endContextSettlement(true);
+    }, 2200);
+  }
+
+  /**
+   * Encerra a janela de estabilizacao.
+   * @param {boolean} refreshAfterStop
+   */
+  function endContextSettlement(refreshAfterStop) {
+    if (state.settleObserver) {
+      state.settleObserver.disconnect();
+      state.settleObserver = null;
+    }
+    if (state.settleDebounceTimer) {
+      window.clearTimeout(state.settleDebounceTimer);
+      state.settleDebounceTimer = 0;
+    }
+    if (state.settleStopTimer) {
+      window.clearTimeout(state.settleStopTimer);
+      state.settleStopTimer = 0;
+    }
+    const wasSettling = state.isContextSettling;
+    state.isContextSettling = false;
+    if (refreshAfterStop && wasSettling && state.frameDoc) {
+      refreshFrameContext('settle-stop');
+    }
+  }
+
+  /**
+   * Detecta mutacoes com potencial de representar troca tardia de conteudo.
+   * @param {MutationRecord[]} mutations
+   * @returns {boolean}
+   */
+  function hasSettlementMutation(mutations) {
+    for (const mutation of mutations) {
+      if (mutation.type !== 'childList') continue;
+      if (mutation.addedNodes.length || mutation.removedNodes.length) return true;
+    }
+    return false;
+  }
+
+  /**
    * Reconstrói o contexto da pagina atual.
    * @param {string} reason
    */
@@ -359,11 +430,14 @@
     state.pageContext = nextContext;
 
     if (!nextContext.isIntimationPage) {
-      scheduleActionMenuTeardown();
+      if (state.isContextSettling) return;
+      teardownActionMenu();
       return;
     }
 
-    cancelActionMenuTeardown();
+    if (state.isContextSettling) {
+      endContextSettlement(false);
+    }
     injectFrameStyles(nextContext.doc);
     const nextSignature = buildPageSignature(nextContext);
     const shouldSyncRows = nextSignature !== state.pageSignature || reason === 'inline-action';
@@ -1434,41 +1508,8 @@
    * Remove o menu flutuante quando a pagina deixa de ser relevante.
    */
   function teardownActionMenu() {
-    cancelActionMenuTeardown();
     state.menuOpen = false;
     document.getElementById(IDS.hostRoot)?.remove();
-  }
-
-  /**
-   * Agenda a remocao do menu apenas se o contexto irrelevante persistir.
-   * Isso evita sumicos em recargas transitórias da mesma tela.
-   */
-  function scheduleActionMenuTeardown() {
-    if (state.pendingTeardownTimer) return;
-    state.pendingTeardownTimer = window.setTimeout(() => {
-      state.pendingTeardownTimer = 0;
-      bindMainFrame();
-      if (!state.frame || !state.frameDoc) {
-        teardownActionMenu();
-        return;
-      }
-      const confirmedContext = analyzeFrameContext(state.frame, state.frameDoc);
-      state.pageContext = confirmedContext;
-      if (!confirmedContext.isIntimationPage) {
-        teardownActionMenu();
-        return;
-      }
-      refreshFrameContext('teardown-cancelled');
-    }, 900);
-  }
-
-  /**
-   * Cancela o teardown pendente do menu.
-   */
-  function cancelActionMenuTeardown() {
-    if (!state.pendingTeardownTimer) return;
-    window.clearTimeout(state.pendingTeardownTimer);
-    state.pendingTeardownTimer = 0;
   }
 
   /**
