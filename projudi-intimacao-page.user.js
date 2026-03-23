@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.8
+// @version      3.9
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -356,18 +356,18 @@
     bindMainFrame();
     ensureActionMenu();
     if (!state.frame || !state.frameDoc) {
+      updateActionMenuVisibility({ isIntimationPage: false });
       if (state.modalOpen) renderModal();
-      updateActionPanelState();
       return;
     }
 
     const nextContext = analyzeFrameContext(state.frame, state.frameDoc);
     state.pageContext = nextContext;
+    updateActionMenuVisibility(nextContext);
 
     if (!nextContext.isIntimationPage) {
       state.pageSignature = '';
       if (state.modalOpen) renderModal();
-      updateActionPanelState();
       return;
     }
 
@@ -386,7 +386,6 @@
     if (state.modalOpen) {
       renderModal();
     }
-    updateActionPanelState();
   }
 
   /**
@@ -422,21 +421,14 @@
         mainTable = table;
       }
 
-      if (headerMap.intimationId >= 0 && headerMap.process >= 0 && headerMap.movement >= 0) {
+      if (isStructuredIntimationTable(table, headerMap)) {
         const legend = normalizeSpaces(table.closest('fieldset')?.querySelector('legend')?.textContent || '');
-        if (isIntimationHint(title) || isIntimationHint(url) || isIntimationHint(legend)) {
-          table[PRIVATE.tableContext] = headerMap;
-          markTables.push({ table, headerMap, legend });
-        }
+        table[PRIVATE.tableContext] = headerMap;
+        markTables.push({ table, headerMap, legend });
       }
     }
 
-    const isIntimationPage = Boolean(
-      (mainTable && mainScore > 0) ||
-        markTables.length ||
-        isIntimationHint(title) ||
-        /intimac/i.test(url)
-    );
+    const isIntimationPage = markTables.length > 0;
 
     return {
       doc,
@@ -484,6 +476,7 @@
    * @returns {number}
    */
   function scoreMainTable(table, headerMap) {
+    if (!isStructuredIntimationTable(table, headerMap)) return 0;
     let score = 0;
     if (headerMap.intimationId >= 0) score += 2;
     if (headerMap.process >= 0) score += 2;
@@ -491,8 +484,37 @@
     if (headerMap.kind >= 0) score += 1;
     if (headerMap.deadline >= 0) score += 2;
     if (headerMap.baseDate >= 0) score += 2;
+    if (headerMap.mark >= 0) score += 1;
+    if (hasNativeIntimationAction(table)) score += 2;
     if (table.matches(SELECTORS.relevantTable)) score += 1;
     return score;
+  }
+
+  /**
+   * Verifica se a tabela possui estrutura de pendências/intimações do Projudi.
+   * @param {HTMLTableElement} table
+   * @param {ReturnType<typeof createHeaderMap>} headerMap
+   * @returns {boolean}
+   */
+  function isStructuredIntimationTable(table, headerMap) {
+    const hasCoreColumns = headerMap.intimationId >= 0 && headerMap.process >= 0 && headerMap.movement >= 0;
+    if (!hasCoreColumns) return false;
+    return (
+      headerMap.baseDate >= 0 ||
+      headerMap.deadline >= 0 ||
+      headerMap.mark >= 0 ||
+      hasNativeIntimationAction(table)
+    );
+  }
+
+  /**
+   * Detecta ações nativas de pendência/intimação na tabela.
+   * @param {ParentNode | null} root
+   * @returns {boolean}
+   */
+  function hasNativeIntimationAction(root) {
+    if (!root || typeof root.querySelector !== 'function') return false;
+    return Boolean(root.querySelector(SELECTORS.nativeDoneAction));
   }
 
   /**
@@ -537,16 +559,6 @@
       kind: findIndex('tipo'),
       actionHost: findLastIndex('opcoes', 'opções', 'opcoes', 'marcar', 'descartar', 'detalhes')
     };
-  }
-
-  /**
-   * Verifica se um texto parece ligado ao contexto de intimacoes.
-   * @param {string} value
-   * @returns {boolean}
-   */
-  function isIntimationHint(value) {
-    const text = normalizeText(value);
-    return text.includes('intimac') || text.includes('citac');
   }
 
   /**
@@ -1022,28 +1034,36 @@
         right: 16px;
         bottom: 16px;
         z-index: 2147483647;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 8px;
+        width: 40px;
+        height: 40px;
+        pointer-events: none;
         font-family: Arial, sans-serif;
+      }
+      #${IDS.hostRoot} > * {
+        pointer-events: auto;
       }
       .pjip-hidden {
         display: none !important;
       }
       .pjip-actions-panel {
+        position: absolute;
+        right: 0;
+        bottom: 48px;
         width: 260px;
         border: 1px solid #d4dceb;
         border-radius: 12px;
         background: #fff;
         box-shadow: 0 14px 28px rgba(15, 36, 62, 0.18);
         overflow: hidden;
+        visibility: hidden;
         opacity: 0;
+        transform-origin: bottom right;
         transform: translateY(8px) scale(.98);
         pointer-events: none;
         transition: opacity .15s ease, transform .15s ease;
       }
       .pjip-actions-panel[data-open="true"] {
+        visibility: visible;
         opacity: 1;
         transform: translateY(0) scale(1);
         pointer-events: auto;
@@ -1386,6 +1406,7 @@
 
     const root = document.createElement('div');
     root.id = IDS.hostRoot;
+    root.classList.add('pjip-hidden');
 
     const panel = document.createElement('div');
     panel.id = IDS.actionsPanel;
@@ -1453,6 +1474,7 @@
   function updateActionMenuVisibility(context) {
     const root = document.getElementById(IDS.hostRoot);
     if (!root) return;
+    if (!context.isIntimationPage) state.menuOpen = false;
     root.classList.toggle('pjip-hidden', !context.isIntimationPage);
     updateActionPanelState();
   }
