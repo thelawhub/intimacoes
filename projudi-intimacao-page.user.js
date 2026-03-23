@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.7
+// @version      3.8
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.7';
+      : '3.8';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -88,10 +88,6 @@
    * pageContext: ReturnType<typeof analyzeFrameContext> | null,
    * pageSignature: string,
    * refreshTimers: number[],
-   * settleObserver: MutationObserver | null,
-   * settleDebounceTimer: number,
-   * settleStopTimer: number,
-   * isContextSettling: boolean,
    * refreshNonce: number,
    * menuCommandId: number | null,
    * hostHooksAttached: boolean,
@@ -112,10 +108,6 @@
     pageContext: null,
     pageSignature: '',
     refreshTimers: [],
-    settleObserver: null,
-    settleDebounceTimer: 0,
-    settleStopTimer: 0,
-    isContextSettling: false,
     refreshNonce: 0,
     menuCommandId: null,
     hostHooksAttached: false,
@@ -137,6 +129,8 @@
     injectHostStyles();
     attachHostHooks();
     registerMenuCommand();
+    ensureActionMenu();
+    updateActionPanelState();
     bindMainFrame();
   }
 
@@ -157,7 +151,6 @@
           state.menuOpen = false;
           updateActionPanelState();
         }
-
       },
       true
     );
@@ -264,9 +257,10 @@
     state.frameWin = safeRun('Falha ao acessar a janela do iframe principal.', () => frame.contentWindow, null) || null;
     if (!state.frameDoc || !state.frameDoc.body) return;
 
+    state.pageContext = null;
+    state.pageSignature = '';
     attachFrameHooks(state.frameDoc);
     patchFrameFunctions(state.frameWin);
-    beginContextSettlement(state.frameDoc);
     refreshFrameContext('frame-load');
   }
 
@@ -355,96 +349,35 @@
   }
 
   /**
-   * Inicia uma janela curta de estabilizacao apos carregamentos do iframe.
-   * O objetivo e capturar reconstrucoes tardias do DOM sem manter observer fixo.
-   * @param {Document} doc
-   */
-  function beginContextSettlement(doc) {
-    endContextSettlement(false);
-    state.isContextSettling = true;
-
-    const root = doc.getElementById('divTabela') || doc.getElementById('divCorpo') || doc.body || doc.documentElement;
-    if (root) {
-      state.settleObserver = new MutationObserver((mutations) => {
-        if (!hasSettlementMutation(mutations)) return;
-        window.clearTimeout(state.settleDebounceTimer);
-        state.settleDebounceTimer = window.setTimeout(() => {
-          state.settleDebounceTimer = 0;
-          if (state.frameDoc === doc) refreshFrameContext('settle-mutation');
-        }, 100);
-      });
-      state.settleObserver.observe(root, { childList: true, subtree: true });
-    }
-
-    state.settleStopTimer = window.setTimeout(() => {
-      endContextSettlement(true);
-    }, 2200);
-  }
-
-  /**
-   * Encerra a janela de estabilizacao.
-   * @param {boolean} refreshAfterStop
-   */
-  function endContextSettlement(refreshAfterStop) {
-    if (state.settleObserver) {
-      state.settleObserver.disconnect();
-      state.settleObserver = null;
-    }
-    if (state.settleDebounceTimer) {
-      window.clearTimeout(state.settleDebounceTimer);
-      state.settleDebounceTimer = 0;
-    }
-    if (state.settleStopTimer) {
-      window.clearTimeout(state.settleStopTimer);
-      state.settleStopTimer = 0;
-    }
-    const wasSettling = state.isContextSettling;
-    state.isContextSettling = false;
-    if (refreshAfterStop && wasSettling && state.frameDoc) {
-      refreshFrameContext('settle-stop');
-    }
-  }
-
-  /**
-   * Detecta mutacoes com potencial de representar troca tardia de conteudo.
-   * @param {MutationRecord[]} mutations
-   * @returns {boolean}
-   */
-  function hasSettlementMutation(mutations) {
-    for (const mutation of mutations) {
-      if (mutation.type !== 'childList') continue;
-      if (mutation.addedNodes.length || mutation.removedNodes.length) return true;
-    }
-    return false;
-  }
-
-  /**
    * Reconstrói o contexto da pagina atual.
    * @param {string} reason
    */
   function refreshFrameContext(reason) {
     bindMainFrame();
-    if (!state.frame || !state.frameDoc) return;
+    ensureActionMenu();
+    if (!state.frame || !state.frameDoc) {
+      if (state.modalOpen) renderModal();
+      updateActionPanelState();
+      return;
+    }
 
     const nextContext = analyzeFrameContext(state.frame, state.frameDoc);
     state.pageContext = nextContext;
 
     if (!nextContext.isIntimationPage) {
-      if (state.isContextSettling) return;
-      teardownActionMenu();
+      state.pageSignature = '';
+      if (state.modalOpen) renderModal();
+      updateActionPanelState();
       return;
     }
 
-    if (state.isContextSettling) {
-      endContextSettlement(false);
-    }
     injectFrameStyles(nextContext.doc);
     const nextSignature = buildPageSignature(nextContext);
-    const shouldSyncRows = nextSignature !== state.pageSignature || reason === 'inline-action';
+    const shouldSyncRows =
+      nextSignature !== state.pageSignature ||
+      reason === 'inline-action' ||
+      reason === 'frame-load';
     state.pageSignature = nextSignature;
-
-    ensureActionMenu();
-    updateActionMenuVisibility(nextContext);
 
     if (shouldSyncRows) {
       syncPageRows(nextContext);
@@ -453,6 +386,7 @@
     if (state.modalOpen) {
       renderModal();
     }
+    updateActionPanelState();
   }
 
   /**
