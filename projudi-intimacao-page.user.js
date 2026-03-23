@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimacoes
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.2
+// @version      3.3
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reune intimações em uma pagina, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memoria.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.2';
+      : '3.3';
   const LOG_PREFIX = '[Intimacoes]';
 
   const SELECTORS = {
@@ -142,7 +142,7 @@
     document.addEventListener(
       'click',
       (event) => {
-        const target = /** @type {Element | null} */ (event.target instanceof Element ? event.target : null);
+        const target = resolveEventElement(event.target);
         if (!target) return;
         const root = document.getElementById(IDS.hostRoot);
         if (root && !root.contains(target)) {
@@ -308,7 +308,7 @@
    * @param {MouseEvent} event
    */
   function handleFrameClick(event) {
-    const target = /** @type {Element | null} */ (event.target instanceof Element ? event.target : null);
+    const target = resolveEventElement(event.target);
     if (!target) return;
 
     const actionButton = target.closest('[data-pjip-action]');
@@ -586,6 +586,7 @@
     const actionCellIndex = headerMap.actionHost >= 0 ? headerMap.actionHost : Math.max(headerMap.mark, headerMap.details, 0);
     const actionCell = /** @type {HTMLTableCellElement | undefined} */ (row.children[actionCellIndex]);
     if (!actionCell) return;
+    actionCell.classList.add('pjip-native-host');
 
     let host = actionCell.querySelector('.pjip-inline');
     if (!host) {
@@ -1334,25 +1335,46 @@
       .pjip-inline {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 4px;
-        margin-left: 4px;
+        margin-left: 3px;
         white-space: nowrap;
+        vertical-align: middle;
+      }
+      .pjip-native-host {
+        white-space: nowrap;
+        vertical-align: middle !important;
       }
       .pjip-inline-btn {
-        min-width: 22px;
-        height: 22px;
-        padding: 0 5px;
-        border-radius: 8px;
-        font-size: 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        width: 18px;
+        height: 18px;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: #1d4d87;
+        font-size: 18px;
+        font-weight: 700;
         line-height: 1;
+        vertical-align: middle;
+        box-shadow: none;
+      }
+      .pjip-inline-btn:hover {
+        background: transparent;
+        color: #114b96;
       }
       .pjip-inline-btn[disabled] {
         opacity: .4;
         cursor: default;
       }
       .pjip-inline-btn[disabled]:hover {
-        background: #fff;
-        border-color: #cbd8e8;
+        background: transparent;
+        color: #1d4d87;
       }
     `;
 
@@ -2475,6 +2497,18 @@
    */
   function normalizeSpaces(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Resolve um target de evento em Element, inclusive quando o browser entrega Text.
+   * @param {EventTarget | null} target
+   * @returns {Element | null}
+   */
+  function resolveEventElement(target) {
+    if (!target) return null;
+    if (target instanceof Element) return target;
+    if (target instanceof Node && target.parentElement) return target.parentElement;
+    return null;
   }
 
   /**
