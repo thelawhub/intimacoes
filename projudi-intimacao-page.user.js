@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.5
+// @version      3.6
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.5';
+      : '3.6';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -88,7 +88,7 @@
    * pageContext: ReturnType<typeof analyzeFrameContext> | null,
    * pageSignature: string,
    * refreshTimers: number[],
-   * hostRebindTimers: number[],
+   * pendingTeardownTimer: number,
    * refreshNonce: number,
    * menuCommandId: number | null,
    * hostHooksAttached: boolean,
@@ -109,7 +109,7 @@
     pageContext: null,
     pageSignature: '',
     refreshTimers: [],
-    hostRebindTimers: [],
+    pendingTeardownTimer: 0,
     refreshNonce: 0,
     menuCommandId: null,
     hostHooksAttached: false,
@@ -152,11 +152,6 @@
           updateActionPanelState();
         }
 
-        const modalRoot = document.getElementById(IDS.modalOverlay);
-        const clickedInsideScriptUi = (root && root.contains(target)) || (modalRoot && modalRoot.contains(target));
-        if (!clickedInsideScriptUi && target.closest('a, button, input[type="submit"], [onclick]')) {
-          scheduleHostFrameRebind();
-        }
       },
       true
     );
@@ -353,26 +348,6 @@
   }
 
   /**
-   * Agenda tentativas leves de rebinding ao iframe principal quando a interface
-   * superior do Projudi troca o frame sem recarregar a pagina inteira.
-   */
-  function scheduleHostFrameRebind() {
-    for (const timer of state.hostRebindTimers) window.clearTimeout(timer);
-    state.hostRebindTimers = [];
-
-    const delays = [120, 400, 1000];
-    for (const delay of delays) {
-      const timer = window.setTimeout(() => {
-        const previousFrame = state.frame;
-        bindMainFrame();
-        if (state.frame && state.frame !== previousFrame) return;
-        if (state.frame && state.frameDoc) refreshFrameContext(`host-rebind:${delay}`);
-      }, delay);
-      state.hostRebindTimers.push(timer);
-    }
-  }
-
-  /**
    * Reconstrói o contexto da pagina atual.
    * @param {string} reason
    */
@@ -384,10 +359,11 @@
     state.pageContext = nextContext;
 
     if (!nextContext.isIntimationPage) {
-      teardownActionMenu();
+      scheduleActionMenuTeardown();
       return;
     }
 
+    cancelActionMenuTeardown();
     injectFrameStyles(nextContext.doc);
     const nextSignature = buildPageSignature(nextContext);
     const shouldSyncRows = nextSignature !== state.pageSignature || reason === 'inline-action';
@@ -1458,8 +1434,41 @@
    * Remove o menu flutuante quando a pagina deixa de ser relevante.
    */
   function teardownActionMenu() {
+    cancelActionMenuTeardown();
     state.menuOpen = false;
     document.getElementById(IDS.hostRoot)?.remove();
+  }
+
+  /**
+   * Agenda a remocao do menu apenas se o contexto irrelevante persistir.
+   * Isso evita sumicos em recargas transitórias da mesma tela.
+   */
+  function scheduleActionMenuTeardown() {
+    if (state.pendingTeardownTimer) return;
+    state.pendingTeardownTimer = window.setTimeout(() => {
+      state.pendingTeardownTimer = 0;
+      bindMainFrame();
+      if (!state.frame || !state.frameDoc) {
+        teardownActionMenu();
+        return;
+      }
+      const confirmedContext = analyzeFrameContext(state.frame, state.frameDoc);
+      state.pageContext = confirmedContext;
+      if (!confirmedContext.isIntimationPage) {
+        teardownActionMenu();
+        return;
+      }
+      refreshFrameContext('teardown-cancelled');
+    }, 900);
+  }
+
+  /**
+   * Cancela o teardown pendente do menu.
+   */
+  function cancelActionMenuTeardown() {
+    if (!state.pendingTeardownTimer) return;
+    window.clearTimeout(state.pendingTeardownTimer);
+    state.pendingTeardownTimer = 0;
   }
 
   /**
