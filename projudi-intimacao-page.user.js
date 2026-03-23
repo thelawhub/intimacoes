@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.4
+// @version      3.5
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.4';
+      : '3.5';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -88,6 +88,7 @@
    * pageContext: ReturnType<typeof analyzeFrameContext> | null,
    * pageSignature: string,
    * refreshTimers: number[],
+   * hostRebindTimers: number[],
    * refreshNonce: number,
    * menuCommandId: number | null,
    * hostHooksAttached: boolean,
@@ -108,6 +109,7 @@
     pageContext: null,
     pageSignature: '',
     refreshTimers: [],
+    hostRebindTimers: [],
     refreshNonce: 0,
     menuCommandId: null,
     hostHooksAttached: false,
@@ -148,6 +150,12 @@
         if (root && !root.contains(target)) {
           state.menuOpen = false;
           updateActionPanelState();
+        }
+
+        const modalRoot = document.getElementById(IDS.modalOverlay);
+        const clickedInsideScriptUi = (root && root.contains(target)) || (modalRoot && modalRoot.contains(target));
+        if (!clickedInsideScriptUi && target.closest('a, button, input[type="submit"], [onclick]')) {
+          scheduleHostFrameRebind();
         }
       },
       true
@@ -342,6 +350,26 @@
   function clearRefreshTimers() {
     for (const timer of state.refreshTimers) window.clearTimeout(timer);
     state.refreshTimers = [];
+  }
+
+  /**
+   * Agenda tentativas leves de rebinding ao iframe principal quando a interface
+   * superior do Projudi troca o frame sem recarregar a pagina inteira.
+   */
+  function scheduleHostFrameRebind() {
+    for (const timer of state.hostRebindTimers) window.clearTimeout(timer);
+    state.hostRebindTimers = [];
+
+    const delays = [120, 400, 1000];
+    for (const delay of delays) {
+      const timer = window.setTimeout(() => {
+        const previousFrame = state.frame;
+        bindMainFrame();
+        if (state.frame && state.frame !== previousFrame) return;
+        if (state.frame && state.frameDoc) refreshFrameContext(`host-rebind:${delay}`);
+      }, delay);
+      state.hostRebindTimers.push(timer);
+    }
   }
 
   /**
