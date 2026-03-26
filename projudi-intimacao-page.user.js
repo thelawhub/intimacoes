@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.0
+// @version      4.1
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '4.0';
+      : '4.1';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -1015,7 +1015,7 @@
       });
     }
 
-    state.menuCommandId = GM_registerMenuCommand('Gerenciar intimações', () => {
+    state.menuCommandId = GM_registerMenuCommand('Gerenciar Intimações', () => {
       openModal();
     });
   }
@@ -2003,7 +2003,7 @@
     panel.id = IDS.modalPanel;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-label', 'Gerenciar intimações');
+    panel.setAttribute('aria-label', 'Gerenciar Intimações');
 
     const head = document.createElement('div');
     head.className = 'pjip-modal-head';
