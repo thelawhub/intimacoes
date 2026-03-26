@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      3.9
+// @version      4.0
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '3.8';
+      : '4.0';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -1341,10 +1341,16 @@
       }
       .pjip-row--marked td:first-child,
       .pjip-row--marked td:nth-child(2) {
-        box-shadow: inset 4px 0 0 #2f7ae5;
+        box-sizing: border-box;
+        border-left: 4px solid #2f7ae5 !important;
+        padding-left: 6px !important;
       }
       .pjip-row--done {
         background: linear-gradient(90deg, rgba(72, 178, 115, 0.18), rgba(72, 178, 115, 0.05)) !important;
+      }
+      .pjip-row--done td:first-child,
+      .pjip-row--done td:nth-child(2) {
+        border-left-color: #48b273 !important;
       }
       .pjip-row--hidden {
         display: none !important;
