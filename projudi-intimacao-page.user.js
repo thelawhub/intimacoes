@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.4
+// @version      4.5
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '4.4';
+      : '4.5';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -356,7 +356,7 @@
     bindMainFrame();
     ensureActionMenu();
     if (!state.frame || !state.frameDoc) {
-      updateActionMenuVisibility({ isIntimationPage: false });
+      updateActionMenuVisibility({ isIntimationPage: false, showActionMenu: false });
       if (state.modalOpen) renderModal();
       return;
     }
@@ -397,6 +397,7 @@
    *   url: string,
    *   title: string,
    *   isIntimationPage: boolean,
+   *   showActionMenu: boolean,
    *   mainTable: HTMLTableElement | null,
    *   markTables: Array<{table: HTMLTableElement, headerMap: ReturnType<typeof createHeaderMap>, legend: string}>
    * }}
@@ -429,13 +430,15 @@
       }
     }
 
-    const isIntimationPage = isIntimationScreen && markTables.length > 0;
+    const isIntimationPage = markTables.length > 0;
+    const showActionMenu = isIntimationScreen && isIntimationPage;
 
     return {
       doc,
       url,
       title,
       isIntimationPage,
+      showActionMenu,
       mainTable,
       markTables
     };
@@ -1500,8 +1503,9 @@
   function updateActionMenuVisibility(context) {
     const root = document.getElementById(IDS.hostRoot);
     if (!root) return;
-    if (!context.isIntimationPage) state.menuOpen = false;
-    root.classList.toggle('pjip-hidden', !context.isIntimationPage);
+    const shouldShowMenu = Boolean(context.showActionMenu);
+    if (!shouldShowMenu) state.menuOpen = false;
+    root.classList.toggle('pjip-hidden', !shouldShowMenu);
     updateActionPanelState();
   }
 
