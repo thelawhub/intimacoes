@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.2
+// @version      4.3
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -26,7 +26,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info?.script?.version
       ? String(GM_info.script.version)
-      : '4.2';
+      : '4.3';
   const LOG_PREFIX = '[Intimações]';
 
   const SELECTORS = {
@@ -404,6 +404,7 @@
   function analyzeFrameContext(frame, doc) {
     const title = normalizeSpaces(doc.querySelector(SELECTORS.title)?.textContent || '');
     const url = safeRun('Falha ao ler URL do iframe.', () => frame.contentWindow?.location?.href || doc.location.href, '') || '';
+    const isIntimationScreen = isIntimationFrameScreen(doc, url, title);
     const relevantTables = Array.from(doc.querySelectorAll(SELECTORS.relevantTable));
     const tables = relevantTables.length ? relevantTables : Array.from(doc.querySelectorAll(SELECTORS.table));
 
@@ -428,7 +429,7 @@
       }
     }
 
-    const isIntimationPage = markTables.length > 0;
+    const isIntimationPage = isIntimationScreen && markTables.length > 0;
 
     return {
       doc,
@@ -438,6 +439,35 @@
       mainTable,
       markTables
     };
+  }
+
+  /**
+   * Confirma se o iframe atual pertence ao fluxo real de pendências/intimações.
+   * Evita falso positivo na página inicial, que também possui tabelas com colunas parecidas.
+   * @param {Document} doc
+   * @param {string} url
+   * @param {string} title
+   * @returns {boolean}
+   */
+  function isIntimationFrameScreen(doc, url, title) {
+    const normalizedUrl = normalizeText(url);
+    const normalizedTitle = normalizeText(title);
+    const headingText = normalizeText(
+      Array.from(doc.querySelectorAll('.area h2, fieldset > legend, .formLocalizarLegenda'))
+        .map((node) => node.textContent || '')
+        .join(' ')
+    );
+
+    const isPendenciaModule =
+      normalizedUrl.includes('pendencia') ||
+      normalizedTitle.includes('pendencia');
+
+    const mentionsIntimationFlow =
+      headingText.includes('intimacao') ||
+      headingText.includes('citacao') ||
+      headingText.includes('pendencia');
+
+    return isPendenciaModule && mentionsIntimationFlow;
   }
 
   /**
