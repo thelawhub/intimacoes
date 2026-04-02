@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.5
+// @version      4.6
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -1236,19 +1236,32 @@
       .pjip-modal-body {
         display: grid;
         gap: 12px;
-        padding: 14px;
+        padding: 16px;
         overflow: auto;
-        background: #f7f9fc;
+        background: linear-gradient(180deg, #f8fbff 0%, #f2f6fc 100%);
+      }
+      .pjip-section {
+        display: grid;
+        gap: 10px;
+      }
+      .pjip-section-title {
+        margin: 0 0 0 2px;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .03em;
+        text-transform: uppercase;
       }
       .pjip-toolbar,
       .pjip-backup,
       .pjip-item {
         display: grid;
         gap: 10px;
-        padding: 12px;
+        padding: 14px 16px;
         border: 1px solid #d6e0ef;
-        border-radius: 14px;
+        border-radius: 12px;
         background: #fff;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
       .pjip-toolbar input[type="search"],
       .pjip-backup input[type="text"],
@@ -1272,6 +1285,10 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
+        padding: 8px 10px;
+        border: 1px solid #dbe3ef;
+        border-radius: 999px;
+        background: #f8fbff;
         cursor: pointer;
       }
       .pjip-toolbar-meta,
@@ -2054,32 +2071,40 @@
     body.className = 'pjip-modal-body';
     body.innerHTML = `
       <section class="pjip-toolbar">
-        <input type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
-        <div class="pjip-checks">
-          <label><input type="checkbox" data-role="hide-done"> Ocultar concluídas</label>
-          <label><input type="checkbox" data-role="only-marked-page"> Ocultar não marcadas na página</label>
+        <div class="pjip-section">
+          <div class="pjip-section-title">Filtros</div>
+          <input type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
+          <div class="pjip-checks">
+            <label><input type="checkbox" data-role="hide-done"> Ocultar concluídas</label>
+            <label><input type="checkbox" data-role="only-marked-page"> Ocultar não marcadas na página</label>
+          </div>
+          <div class="pjip-toolbar-meta" data-role="meta"></div>
         </div>
-        <div class="pjip-toolbar-meta" data-role="meta"></div>
       </section>
       <section class="pjip-backup">
-        <div><strong>Backup remoto</strong></div>
-        <div class="pjip-backup-meta">Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
-        <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
-        <input type="password" data-role="backup-token" placeholder="Token do GitHub">
-        <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
-        <div class="pjip-checks">
-          <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
-          <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+        <div class="pjip-section">
+          <div class="pjip-section-title">Backup remoto</div>
+          <div class="pjip-backup-meta">Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
+          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
+          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
+          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+          <div class="pjip-checks">
+            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+            <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+          </div>
+          <div class="pjip-backup-actions">
+            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
+          </div>
+          <div class="pjip-backup-meta" data-role="backup-status"></div>
+          <div class="pjip-backup-meta" data-role="backup-last"></div>
         </div>
-        <div class="pjip-backup-actions">
-          <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
-          <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
-          <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
-        </div>
-        <div class="pjip-backup-meta" data-role="backup-status"></div>
-        <div class="pjip-backup-meta" data-role="backup-last"></div>
       </section>
-      <section data-role="list"></section>
+      <section class="pjip-section">
+        <div class="pjip-section-title">Itens monitorados</div>
+        <section data-role="list"></section>
+      </section>
     `;
 
     overlay.appendChild(panel);
