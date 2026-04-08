@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.7
+// @version      4.8
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -1375,19 +1375,27 @@
       }
       .pjip-toolbar-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(180px, .8fr));
+        grid-template-columns: minmax(0, 1fr);
         gap: 10px;
-        align-items: end;
+        align-items: start;
+      }
+      .pjip-toolbar-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
       }
       .pjip-field {
         display: grid;
         gap: 6px;
+        min-width: 0;
       }
       .pjip-field label {
+        display: block;
         color: #47627f;
         font-size: 12px;
         font-weight: 700;
         letter-spacing: .02em;
+        line-height: 1.2;
       }
       .pjip-checks {
         display: flex;
@@ -1558,6 +1566,7 @@
         }
         .pjip-overview,
         .pjip-toolbar-grid,
+        .pjip-toolbar-row,
         .pjip-summary-grid,
         .pjip-item-grid {
           grid-template-columns: 1fr;
@@ -2320,25 +2329,27 @@
                 <label for="pjip-modal-search">Busca</label>
                 <input id="pjip-modal-search" type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
               </div>
-              <div class="pjip-field">
-                <label for="pjip-modal-status">Status</label>
-                <select id="pjip-modal-status" data-role="status-filter">
-                  <option value="all">Todas</option>
-                  <option value="late">Vencidas</option>
-                  <option value="soon">Vencendo</option>
-                  <option value="open">Abertas</option>
-                  <option value="done">Concluídas</option>
-                  <option value="active">Abertas e em andamento</option>
-                </select>
-              </div>
-              <div class="pjip-field">
-                <label for="pjip-modal-sort">Ordenação</label>
-                <select id="pjip-modal-sort" data-role="sort-by">
-                  <option value="deadline-asc">Prazo mais próximo</option>
-                  <option value="deadline-desc">Prazo mais distante</option>
-                  <option value="updated-desc">Atualizadas recentemente</option>
-                  <option value="id-asc">Número da intimação</option>
-                </select>
+              <div class="pjip-toolbar-row">
+                <div class="pjip-field">
+                  <label for="pjip-modal-status">Status</label>
+                  <select id="pjip-modal-status" data-role="status-filter">
+                    <option value="all">Todas</option>
+                    <option value="late">Vencidas</option>
+                    <option value="soon">Vencendo</option>
+                    <option value="open">Abertas</option>
+                    <option value="done">Concluídas</option>
+                    <option value="active">Abertas e em andamento</option>
+                  </select>
+                </div>
+                <div class="pjip-field">
+                  <label for="pjip-modal-sort">Ordenação</label>
+                  <select id="pjip-modal-sort" data-role="sort-by">
+                    <option value="deadline-asc">Prazo mais próximo</option>
+                    <option value="deadline-desc">Prazo mais distante</option>
+                    <option value="updated-desc">Atualizadas recentemente</option>
+                    <option value="id-asc">Número da intimação</option>
+                  </select>
+                </div>
               </div>
             </div>
             <div class="pjip-checks">
