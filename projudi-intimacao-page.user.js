@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.6
+// @version      4.7
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
 // @author       louencosv (GPT)
@@ -803,7 +803,7 @@
 
   /**
    * Le o armazenamento local.
-   * @returns {{items: Record<string, any>, ui: {panelOpen: boolean, hideDone: boolean, onlyMarkedOnPage: boolean, query: string}}}
+   * @returns {{items: Record<string, any>, ui: {panelOpen: boolean, hideDone: boolean, onlyMarkedOnPage: boolean, query: string, statusFilter: string, sortBy: string, backupExpanded: boolean}}}
    */
   function loadStore() {
     const fallback = {
@@ -812,7 +812,10 @@
         panelOpen: false,
         hideDone: true,
         onlyMarkedOnPage: false,
-        query: ''
+        query: '',
+        statusFilter: 'active',
+        sortBy: 'deadline-asc',
+        backupExpanded: false
       }
     };
 
@@ -827,7 +830,10 @@
           panelOpen: Boolean(parsed.ui?.panelOpen),
           hideDone: parsed.ui?.hideDone !== false,
           onlyMarkedOnPage: Boolean(parsed.ui?.onlyMarkedOnPage),
-          query: typeof parsed.ui?.query === 'string' ? parsed.ui.query : ''
+          query: typeof parsed.ui?.query === 'string' ? parsed.ui.query : '',
+          statusFilter: typeof parsed.ui?.statusFilter === 'string' ? parsed.ui.statusFilter : 'active',
+          sortBy: typeof parsed.ui?.sortBy === 'string' ? parsed.ui.sortBy : 'deadline-asc',
+          backupExpanded: Boolean(parsed.ui?.backupExpanded)
         }
       };
     } catch (error) {
@@ -1190,14 +1196,14 @@
         display: flex;
       }
       #${IDS.modalPanel} {
-        width: min(860px, calc(100vw - 48px));
-        max-height: min(82vh, 860px);
+        width: min(980px, calc(100vw - 36px));
+        max-height: min(86vh, 920px);
         display: flex;
         flex-direction: column;
         background: #fff;
         border: 1px solid #cfdaea;
-        border-radius: 16px;
-        box-shadow: 0 22px 48px rgba(8, 32, 61, .22);
+        border-radius: 20px;
+        box-shadow: 0 24px 54px rgba(8, 32, 61, .22);
         overflow: hidden;
       }
       .pjip-modal-head {
@@ -1235,10 +1241,101 @@
       }
       .pjip-modal-body {
         display: grid;
-        gap: 12px;
-        padding: 16px;
+        gap: 14px;
+        padding: 18px;
         overflow: auto;
         background: linear-gradient(180deg, #f8fbff 0%, #f2f6fc 100%);
+      }
+      .pjip-overview {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(280px, .9fr);
+        gap: 14px;
+      }
+      .pjip-summary {
+        display: grid;
+        gap: 12px;
+        padding: 16px 18px;
+        border: 1px solid #d6e0ef;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #fefefe 0%, #f5f9ff 100%);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+      }
+      .pjip-summary-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .pjip-summary-kicker {
+        color: #33537a;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+      .pjip-summary-title {
+        margin-top: 6px;
+        color: #15385f;
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1.1;
+      }
+      .pjip-summary-subtitle {
+        margin-top: 4px;
+        color: #58718e;
+        font-size: 13px;
+      }
+      .pjip-summary-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .pjip-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .pjip-stat {
+        display: grid;
+        gap: 3px;
+        padding: 12px 13px;
+        border: 1px solid #d7e2f0;
+        border-radius: 14px;
+        background: #fff;
+      }
+      .pjip-stat-value {
+        color: #143f70;
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .pjip-stat-label {
+        color: #5b7089;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .02em;
+      }
+      .pjip-stat--late {
+        background: linear-gradient(180deg, #fff6f6 0%, #ffeaea 100%);
+      }
+      .pjip-stat--late .pjip-stat-value {
+        color: #a02828;
+      }
+      .pjip-stat--soon {
+        background: linear-gradient(180deg, #fffaf0 0%, #fff2d8 100%);
+      }
+      .pjip-stat--soon .pjip-stat-value {
+        color: #9a5b00;
+      }
+      .pjip-stat--open {
+        background: linear-gradient(180deg, #f4faff 0%, #eaf3ff 100%);
+      }
+      .pjip-stat--done {
+        background: linear-gradient(180deg, #f3fbf5 0%, #e5f5e9 100%);
+      }
+      .pjip-stat--done .pjip-stat-value {
+        color: #1d6f3b;
       }
       .pjip-section {
         display: grid;
@@ -1254,6 +1351,7 @@
       }
       .pjip-toolbar,
       .pjip-backup,
+      .pjip-list-shell,
       .pjip-item {
         display: grid;
         gap: 10px;
@@ -1264,6 +1362,7 @@
         box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
       .pjip-toolbar input[type="search"],
+      .pjip-toolbar select,
       .pjip-backup input[type="text"],
       .pjip-backup input[type="password"] {
         width: 100%;
@@ -1273,6 +1372,22 @@
         border-radius: 10px;
         padding: 9px 10px;
         font: inherit;
+      }
+      .pjip-toolbar-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(180px, .8fr));
+        gap: 10px;
+        align-items: end;
+      }
+      .pjip-field {
+        display: grid;
+        gap: 6px;
+      }
+      .pjip-field label {
+        color: #47627f;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .02em;
       }
       .pjip-checks {
         display: flex;
@@ -1302,6 +1417,23 @@
         flex-wrap: wrap;
         gap: 8px;
       }
+      .pjip-list-shell {
+        gap: 14px;
+      }
+      .pjip-list-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .pjip-list-meta {
+        color: #61748d;
+        font-size: 12px;
+      }
+      .pjip-list {
+        display: grid;
+        gap: 10px;
+      }
       .pjip-modal-btn {
         padding: 8px 10px;
         font-size: 13px;
@@ -1311,8 +1443,35 @@
         background: #1f69d5;
         color: #fff;
       }
+      .pjip-modal-btn--ghost {
+        background: #f8fbff;
+      }
+      .pjip-backup {
+        gap: 14px;
+      }
+      .pjip-backup[hidden] {
+        display: none;
+      }
+      .pjip-backup-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .pjip-backup-status-pill {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #eef4fb;
+        color: #48627e;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
       .pjip-item--done {
         opacity: .78;
+      }
+      .pjip-item {
+        gap: 12px;
       }
       .pjip-item-top {
         display: flex;
@@ -1345,11 +1504,38 @@
         color: #805400;
         background: #fff0c7;
       }
+      .pjip-item-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .pjip-item-pill {
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: #eef4fb;
+        color: #365879;
+        font-size: 12px;
+        font-weight: 700;
+      }
       .pjip-item-grid {
         display: grid;
-        gap: 6px;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         color: #20364f;
         font-size: 13px;
+      }
+      .pjip-item-line {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+      .pjip-item-line strong {
+        color: #4f6783;
+        font-size: 12px;
+        letter-spacing: .02em;
+      }
+      .pjip-item-line span {
+        overflow-wrap: anywhere;
       }
       .pjip-item-grid strong {
         color: #4f6783;
@@ -1361,6 +1547,31 @@
         background: #fff;
         color: #5c718b;
         text-align: center;
+      }
+      @media (max-width: 860px) {
+        #${IDS.modalOverlay} {
+          padding: 12px;
+        }
+        #${IDS.modalPanel} {
+          width: min(100vw - 8px, 980px);
+          max-height: 92vh;
+        }
+        .pjip-overview,
+        .pjip-toolbar-grid,
+        .pjip-summary-grid,
+        .pjip-item-grid {
+          grid-template-columns: 1fr;
+        }
+        .pjip-summary-head,
+        .pjip-list-head,
+        .pjip-backup-head,
+        .pjip-item-top {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .pjip-summary-actions {
+          justify-content: flex-start;
+        }
       }
     `;
 
@@ -2070,40 +2281,105 @@
     const body = document.createElement('div');
     body.className = 'pjip-modal-body';
     body.innerHTML = `
-      <section class="pjip-toolbar">
-        <div class="pjip-section">
-          <div class="pjip-section-title">Filtros</div>
-          <input type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
-          <div class="pjip-checks">
-            <label><input type="checkbox" data-role="hide-done"> Ocultar concluídas</label>
-            <label><input type="checkbox" data-role="only-marked-page"> Ocultar não marcadas na página</label>
+      <section class="pjip-overview">
+        <section class="pjip-summary">
+          <div class="pjip-summary-head">
+            <div>
+              <div class="pjip-summary-kicker">Painel principal</div>
+              <div class="pjip-summary-title" data-role="summary-title"></div>
+              <div class="pjip-summary-subtitle" data-role="summary-subtitle"></div>
+            </div>
+            <div class="pjip-summary-actions">
+              <button type="button" class="pjip-modal-btn pjip-modal-btn--ghost" data-role="backup-toggle"></button>
+            </div>
           </div>
-          <div class="pjip-toolbar-meta" data-role="meta"></div>
-        </div>
+          <div class="pjip-summary-grid">
+            <div class="pjip-stat pjip-stat--late">
+              <div class="pjip-stat-value" data-role="stat-late">0</div>
+              <div class="pjip-stat-label">Vencidas</div>
+            </div>
+            <div class="pjip-stat pjip-stat--soon">
+              <div class="pjip-stat-value" data-role="stat-soon">0</div>
+              <div class="pjip-stat-label">Vencendo</div>
+            </div>
+            <div class="pjip-stat pjip-stat--open">
+              <div class="pjip-stat-value" data-role="stat-open">0</div>
+              <div class="pjip-stat-label">Abertas</div>
+            </div>
+            <div class="pjip-stat pjip-stat--done">
+              <div class="pjip-stat-value" data-role="stat-done">0</div>
+              <div class="pjip-stat-label">Concluídas</div>
+            </div>
+          </div>
+        </section>
+        <section class="pjip-toolbar">
+          <div class="pjip-section">
+            <div class="pjip-section-title">Filtros</div>
+            <div class="pjip-toolbar-grid">
+              <div class="pjip-field">
+                <label for="pjip-modal-search">Busca</label>
+                <input id="pjip-modal-search" type="search" data-role="search" placeholder="Buscar intimação, processo ou texto">
+              </div>
+              <div class="pjip-field">
+                <label for="pjip-modal-status">Status</label>
+                <select id="pjip-modal-status" data-role="status-filter">
+                  <option value="all">Todas</option>
+                  <option value="late">Vencidas</option>
+                  <option value="soon">Vencendo</option>
+                  <option value="open">Abertas</option>
+                  <option value="done">Concluídas</option>
+                  <option value="active">Abertas e em andamento</option>
+                </select>
+              </div>
+              <div class="pjip-field">
+                <label for="pjip-modal-sort">Ordenação</label>
+                <select id="pjip-modal-sort" data-role="sort-by">
+                  <option value="deadline-asc">Prazo mais próximo</option>
+                  <option value="deadline-desc">Prazo mais distante</option>
+                  <option value="updated-desc">Atualizadas recentemente</option>
+                  <option value="id-asc">Número da intimação</option>
+                </select>
+              </div>
+            </div>
+            <div class="pjip-checks">
+              <label><input type="checkbox" data-role="hide-done"> Ocultar concluídas</label>
+              <label><input type="checkbox" data-role="only-marked-page"> Mostrar só as marcadas nesta página</label>
+            </div>
+            <div class="pjip-toolbar-meta" data-role="meta"></div>
+          </div>
+        </section>
       </section>
-      <section class="pjip-backup">
-        <div class="pjip-section">
-          <div class="pjip-section-title">Backup remoto</div>
-          <div class="pjip-backup-meta">Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
-          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
-          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
-          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
-          <div class="pjip-checks">
-            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
-            <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+      <section class="pjip-list-shell">
+        <div class="pjip-list-head">
+          <div>
+            <div class="pjip-section-title">Itens monitorados</div>
+            <div class="pjip-list-meta" data-role="list-meta"></div>
           </div>
-          <div class="pjip-backup-actions">
-            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
-          </div>
-          <div class="pjip-backup-meta" data-role="backup-status"></div>
-          <div class="pjip-backup-meta" data-role="backup-last"></div>
         </div>
+        <section class="pjip-list" data-role="list"></section>
       </section>
-      <section class="pjip-section">
-        <div class="pjip-section-title">Itens monitorados</div>
-        <section data-role="list"></section>
+      <section class="pjip-backup" data-role="backup-panel" hidden>
+        <div class="pjip-backup-head">
+          <div class="pjip-section">
+            <div class="pjip-section-title">Backup remoto</div>
+            <div class="pjip-backup-meta">Deixe o backup separado do fluxo principal. Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
+          </div>
+          <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
+        </div>
+        <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
+        <input type="password" data-role="backup-token" placeholder="Token do GitHub">
+        <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+        <div class="pjip-checks">
+          <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+          <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+        </div>
+        <div class="pjip-backup-actions">
+          <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
+          <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
+          <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
+        </div>
+        <div class="pjip-backup-meta" data-role="backup-status"></div>
+        <div class="pjip-backup-meta" data-role="backup-last"></div>
       </section>
     `;
 
@@ -2130,11 +2406,31 @@
       renderModal();
     });
 
+    body.querySelector('[data-role="status-filter"]')?.addEventListener('change', (event) => {
+      const input = /** @type {HTMLSelectElement} */ (event.currentTarget);
+      state.store.ui.statusFilter = input.value || 'active';
+      persistStore();
+      renderModal();
+    });
+
+    body.querySelector('[data-role="sort-by"]')?.addEventListener('change', (event) => {
+      const input = /** @type {HTMLSelectElement} */ (event.currentTarget);
+      state.store.ui.sortBy = input.value || 'deadline-asc';
+      persistStore();
+      renderModal();
+    });
+
     body.querySelector('[data-role="only-marked-page"]')?.addEventListener('change', (event) => {
       const input = /** @type {HTMLInputElement} */ (event.currentTarget);
       state.store.ui.onlyMarkedOnPage = input.checked;
       persistStore();
       refreshFrameContext('modal-filter');
+      renderModal();
+    });
+
+    body.querySelector('[data-role="backup-toggle"]')?.addEventListener('click', () => {
+      state.store.ui.backupExpanded = !state.store.ui.backupExpanded;
+      persistStore();
       renderModal();
     });
 
@@ -2210,27 +2506,50 @@
 
     const root = state.modalRoot;
     const backupSettings = loadBackupSettings();
+    const summary = buildItemsSummary();
+    const visibleItems = getFilteredItems();
     setInputValue(root.querySelector('[data-role="search"]'), state.store.ui.query);
     setChecked(root.querySelector('[data-role="hide-done"]'), state.store.ui.hideDone);
     setChecked(root.querySelector('[data-role="only-marked-page"]'), state.store.ui.onlyMarkedOnPage);
+    setSelectValue(root.querySelector('[data-role="status-filter"]'), state.store.ui.statusFilter);
+    setSelectValue(root.querySelector('[data-role="sort-by"]'), state.store.ui.sortBy);
     setChecked(root.querySelector('[data-role="backup-enabled"]'), backupSettings.enabled);
     setChecked(root.querySelector('[data-role="backup-auto"]'), backupSettings.autoBackupOnSave);
     setInputValue(root.querySelector('[data-role="backup-gist-id"]'), backupSettings.gistId);
     setInputValue(root.querySelector('[data-role="backup-token"]'), backupSettings.token);
     setInputValue(root.querySelector('[data-role="backup-file-name"]'), backupSettings.fileName);
     setNodeText(root.querySelector('[data-role="backup-last"]'), formatLastBackupLabel(backupSettings.lastBackupAt));
-
-    const items = getFilteredItems();
+    setNodeText(root.querySelector('[data-role="summary-title"]'), `${summary.visible} item(ns) em foco`);
+    setNodeText(
+      root.querySelector('[data-role="summary-subtitle"]'),
+      summary.late
+        ? `${summary.late} vencida(s) precisam de atenção imediata.`
+        : 'Painel reorganizado para priorizar o que exige ação.'
+    );
+    setNodeText(root.querySelector('[data-role="stat-late"]'), String(summary.late));
+    setNodeText(root.querySelector('[data-role="stat-soon"]'), String(summary.soon));
+    setNodeText(root.querySelector('[data-role="stat-open"]'), String(summary.open));
+    setNodeText(root.querySelector('[data-role="stat-done"]'), String(summary.done));
+    setNodeText(root.querySelector('[data-role="list-meta"]'), describeVisibleItems(summary.visible, summary.total, state.store.ui.statusFilter));
     setNodeText(
       root.querySelector('[data-role="meta"]'),
-      `${items.length} item(ns) visível(is) • ${Object.keys(state.store.items).length} intimação(ões) marcada(s).`
+      `${visibleItems.length} item(ns) visível(is) • ${summary.total} intimação(ões) marcada(s) • ordenação: ${resolveSortLabel(state.store.ui.sortBy)}.`
     );
+    setNodeText(
+      root.querySelector('[data-role="backup-toggle"]'),
+      state.store.ui.backupExpanded ? 'Ocultar backup remoto' : 'Abrir backup remoto'
+    );
+    setNodeText(root.querySelector('[data-role="backup-pill"]'), backupSettings.enabled ? 'Backup ativo' : 'Backup desativado');
+    const backupPanel = root.querySelector('[data-role="backup-panel"]');
+    if (backupPanel instanceof HTMLElement) {
+      backupPanel.hidden = !state.store.ui.backupExpanded;
+    }
 
     const listNode = root.querySelector('[data-role="list"]');
     if (!listNode) return;
     listNode.replaceChildren();
 
-    if (!items.length) {
+    if (!visibleItems.length) {
       const empty = document.createElement('div');
       empty.className = 'pjip-empty';
       empty.textContent = 'Nenhuma intimação marcada para este filtro.';
@@ -2239,7 +2558,7 @@
     }
 
     const fragment = document.createDocumentFragment();
-    for (const item of items) {
+    for (const item of visibleItems) {
       fragment.appendChild(buildModalItem(item));
     }
     listNode.appendChild(fragment);
@@ -2257,23 +2576,26 @@
     const top = document.createElement('div');
     top.className = 'pjip-item-top';
 
+    const headGroup = document.createElement('div');
     const idNode = document.createElement('div');
     idNode.className = 'pjip-item-id';
     idNode.textContent = String(item.id || '');
+    const meta = document.createElement('div');
+    meta.className = 'pjip-item-meta';
+    meta.appendChild(buildItemPill(item.processNumber || 'Sem processo'));
+    meta.appendChild(buildItemPill(item.deadline ? `Prazo ${item.deadline}` : 'Sem prazo'));
+    meta.appendChild(buildItemPill(item.sourceLegend || item.kind || 'Intimação'));
+    headGroup.append(idNode, meta);
 
     const statusNode = document.createElement('div');
     statusNode.className = `pjip-item-status ${resolveItemStatusClass(item)}`.trim();
     statusNode.textContent = resolveItemStatusLabel(item);
-    top.append(idNode, statusNode);
+    top.append(headGroup, statusNode);
 
     const grid = document.createElement('div');
     grid.className = 'pjip-item-grid';
-    appendLabeledValue(grid, 'Processo', item.processNumber || '—');
-    appendLabeledValue(grid, 'Prazo', item.deadline || '—');
-    appendLabeledValue(grid, 'Origem', item.sourceLegend || item.kind || 'Intimação');
-    const movement = document.createElement('div');
-    movement.textContent = item.movement || '—';
-    grid.appendChild(movement);
+    appendLabeledValue(grid, 'Movimentação', item.movement || '—');
+    appendLabeledValue(grid, 'Última atualização', formatObservedAt(item.updatedAt || item.observedAt));
 
     const actions = document.createElement('div');
     actions.className = 'pjip-item-actions';
@@ -2320,11 +2642,25 @@
    */
   function appendLabeledValue(container, label, value) {
     const line = document.createElement('div');
+    line.className = 'pjip-item-line';
     const strong = document.createElement('strong');
-    strong.textContent = `${label}: `;
-    line.appendChild(strong);
-    line.appendChild(document.createTextNode(value));
+    strong.textContent = label;
+    const text = document.createElement('span');
+    text.textContent = value;
+    line.append(strong, text);
     container.appendChild(line);
+  }
+
+  /**
+   * Cria um selo visual para metadados principais do item.
+   * @param {string} text
+   * @returns {HTMLElement}
+   */
+  function buildItemPill(text) {
+    const pill = document.createElement('div');
+    pill.className = 'pjip-item-pill';
+    pill.textContent = text;
+    return pill;
   }
 
   /**
@@ -2334,7 +2670,9 @@
   function getFilteredItems() {
     const query = normalizeText(state.store.ui.query);
     const items = Object.values(state.store.items).filter((item) => {
-      if (state.store.ui.hideDone && item.done) return false;
+      const status = resolveItemStatusKey(item);
+      if (state.store.ui.hideDone && item.done && state.store.ui.statusFilter !== 'done') return false;
+      if (!matchesStatusFilter(status, state.store.ui.statusFilter)) return false;
       if (!query) return true;
       const haystack = normalizeText([item.id, item.processNumber, item.deadline, item.movement, item.sourceLegend].join(' '));
       return haystack.includes(query);
@@ -2343,12 +2681,124 @@
     items.sort((left, right) => {
       const leftTime = parseBrazilianDateTime(left.deadline) || Number.MAX_SAFE_INTEGER;
       const rightTime = parseBrazilianDateTime(right.deadline) || Number.MAX_SAFE_INTEGER;
-      if (left.done !== right.done) return left.done ? 1 : -1;
-      if (leftTime !== rightTime) return leftTime - rightTime;
+      if (state.store.ui.sortBy === 'deadline-desc') {
+        if (left.done !== right.done) return left.done ? 1 : -1;
+        if (leftTime !== rightTime) return rightTime - leftTime;
+      } else if (state.store.ui.sortBy === 'updated-desc') {
+        const leftUpdated = resolveUpdatedAtTime(left);
+        const rightUpdated = resolveUpdatedAtTime(right);
+        if (leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
+      } else if (state.store.ui.sortBy === 'id-asc') {
+        return String(left.id).localeCompare(String(right.id), 'pt-BR', { numeric: true });
+      } else {
+        if (left.done !== right.done) return left.done ? 1 : -1;
+        if (leftTime !== rightTime) return leftTime - rightTime;
+      }
       return String(left.id).localeCompare(String(right.id), 'pt-BR', { numeric: true });
     });
 
     return items;
+  }
+
+  /**
+   * Gera resumo geral para o topo do painel.
+   * @returns {{total: number, visible: number, late: number, soon: number, open: number, done: number}}
+   */
+  function buildItemsSummary() {
+    const allItems = Object.values(state.store.items);
+    let late = 0;
+    let soon = 0;
+    let open = 0;
+    let done = 0;
+
+    for (const item of allItems) {
+      const status = resolveItemStatusKey(item);
+      if (status === 'done') done += 1;
+      else if (status === 'late') late += 1;
+      else if (status === 'soon') soon += 1;
+      else open += 1;
+    }
+
+    return {
+      total: allItems.length,
+      visible: getFilteredItems().length,
+      late,
+      soon,
+      open,
+      done
+    };
+  }
+
+  /**
+   * Define se um status pertence ao filtro selecionado.
+   * @param {string} status
+   * @param {string} filter
+   * @returns {boolean}
+   */
+  function matchesStatusFilter(status, filter) {
+    if (filter === 'all') return true;
+    if (filter === 'active') return status === 'late' || status === 'soon' || status === 'open';
+    return status === filter;
+  }
+
+  /**
+   * Resolve a chave de status usada nos filtros.
+   * @param {any} item
+   * @returns {'done' | 'late' | 'soon' | 'open'}
+   */
+  function resolveItemStatusKey(item) {
+    if (item.done) return 'done';
+    const time = parseBrazilianDateTime(item.deadline);
+    if (!time) return 'open';
+    const now = Date.now();
+    if (time < now) return 'late';
+    if (time - now <= 2 * 24 * 60 * 60 * 1000) return 'soon';
+    return 'open';
+  }
+
+  /**
+   * Resolve um timestamp comparavel para ordenacao por atualizacao.
+   * @param {any} item
+   * @returns {number}
+   */
+  function resolveUpdatedAtTime(item) {
+    const value = item.updatedAt || item.observedAt || '';
+    return parseBrazilianDateTime(value) || Date.parse(value) || 0;
+  }
+
+  /**
+   * Descreve a lista visivel conforme o filtro aplicado.
+   * @param {number} visible
+   * @param {number} total
+   * @param {string} statusFilter
+   * @returns {string}
+   */
+  function describeVisibleItems(visible, total, statusFilter) {
+    const scope =
+      statusFilter === 'late'
+        ? 'somente vencidas'
+        : statusFilter === 'soon'
+          ? 'somente vencendo'
+          : statusFilter === 'open'
+            ? 'somente abertas'
+            : statusFilter === 'done'
+              ? 'somente concluídas'
+              : statusFilter === 'active'
+                ? 'abertas em andamento'
+                : 'todos os status';
+    return `${visible} item(ns) exibido(s) de ${total} monitorado(s) • filtro: ${scope}.`;
+  }
+
+  /**
+   * Resolve o rotulo legivel da ordenacao.
+   * @param {string} sortBy
+   * @returns {string}
+   */
+  function resolveSortLabel(sortBy) {
+    if (sortBy === 'deadline-desc') return 'prazo mais distante';
+    if (sortBy === 'updated-desc') return 'atualizadas recentemente';
+    if (sortBy === 'id-asc') return 'número da intimação';
+    return 'prazo mais próximo';
   }
 
   /**
@@ -2357,12 +2807,10 @@
    * @returns {string}
    */
   function resolveItemStatusClass(item) {
-    if (item.done) return 'pjip-item-status--done';
-    const time = parseBrazilianDateTime(item.deadline);
-    if (!time) return '';
-    const now = Date.now();
-    if (time < now) return 'pjip-item-status--late';
-    if (time - now <= 2 * 24 * 60 * 60 * 1000) return 'pjip-item-status--soon';
+    const status = resolveItemStatusKey(item);
+    if (status === 'done') return 'pjip-item-status--done';
+    if (status === 'late') return 'pjip-item-status--late';
+    if (status === 'soon') return 'pjip-item-status--soon';
     return '';
   }
 
@@ -2372,12 +2820,10 @@
    * @returns {string}
    */
   function resolveItemStatusLabel(item) {
-    if (item.done) return 'Concluída';
-    const time = parseBrazilianDateTime(item.deadline);
-    if (!time) return 'Sem prazo';
-    const now = Date.now();
-    if (time < now) return 'Vencida';
-    if (time - now <= 2 * 24 * 60 * 60 * 1000) return 'Vencendo';
+    const status = resolveItemStatusKey(item);
+    if (status === 'done') return 'Concluída';
+    if (status === 'late') return 'Vencida';
+    if (status === 'soon') return 'Vencendo';
     return 'Aberta';
   }
 
@@ -2628,6 +3074,20 @@
   }
 
   /**
+   * Formata a data observada/atualizada para exibicao amigavel.
+   * @param {string} value
+   * @returns {string}
+   */
+  function formatObservedAt(value) {
+    if (!value) return '—';
+    const brazilianTime = parseBrazilianDateTime(value);
+    if (brazilianTime) return new Date(brazilianTime).toLocaleString('pt-BR');
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString('pt-BR');
+  }
+
+  /**
    * Atualiza o valor de um input.
    * @param {Element | null} element
    * @param {string} value
@@ -2643,6 +3103,15 @@
    */
   function setChecked(element, value) {
     if (element instanceof HTMLInputElement) element.checked = value;
+  }
+
+  /**
+   * Atualiza o valor de um select.
+   * @param {Element | null} element
+   * @param {string} value
+   */
+  function setSelectValue(element, value) {
+    if (element instanceof HTMLSelectElement) element.value = value;
   }
 
   /**
