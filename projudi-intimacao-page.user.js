@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.0
+// @version      5.1
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -23,7 +23,16 @@
 (() => {
   'use strict';
 
-  if (window.top !== window.self) return;
+  if (window.top !== window.self) {
+    try {
+      if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Gerenciar Intimações', () => {
+          window.top.postMessage({ type: 'pjip:open-manager' }, '*');
+        });
+      }
+    } catch (_) {}
+    return;
+  }
 
   const SCRIPT_NAME = 'Intimações';
   const SCRIPT_VERSION =
@@ -162,6 +171,15 @@
     attachHostHooks();
     attachDeadlineHooks();
     registerMenuCommand();
+    window.addEventListener('message', (event) => {
+      if (!event || !event.data || event.data.type !== 'pjip:open-manager') return;
+      openModal();
+    });
+    window.addEventListener('pageshow', registerMenuCommand, true);
+    window.addEventListener('focus', registerMenuCommand, true);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) registerMenuCommand();
+    });
     ensureActionMenu();
     updateActionPanelState();
     bindMainFrame();
@@ -1085,15 +1103,23 @@
   function registerMenuCommand() {
     if (typeof GM_registerMenuCommand !== 'function') return;
 
-    if (state.menuCommandIds.length && typeof GM_unregisterMenuCommand === 'function') {
-      for (const commandId of state.menuCommandIds.splice(0)) {
+    const previousIds = state.menuCommandIds.splice(0);
+    const nextId = GM_registerMenuCommand('Gerenciar Intimações', () => openModal());
+    if (nextId !== null && nextId !== undefined) {
+      state.menuCommandIds.push(nextId);
+    } else {
+      state.menuCommandIds.push(...previousIds);
+      return;
+    }
+
+    if (previousIds.length && typeof GM_unregisterMenuCommand === 'function') {
+      for (const commandId of previousIds) {
+        if (commandId === nextId) continue;
         safeRun('Falha ao remover comando anterior do menu.', () => {
           GM_unregisterMenuCommand(commandId);
         });
       }
     }
-
-    state.menuCommandIds.push(GM_registerMenuCommand('Gerenciar Intimações', () => openModal()));
   }
 
   /**
