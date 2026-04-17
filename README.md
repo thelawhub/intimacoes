@@ -5,6 +5,8 @@ Script para reunir intimações do Projudi do TJGO em uma página única e facil
 ## O que ele faz
 
 - reúne intimações em uma visualização mais prática;
+- destaca prazos próximos diretamente nas colunas de data limite;
+- permite filtrar a página por data exata, período ou ausência de prazo;
 - permite marcar e organizar itens localmente;
 - oferece exportação em CSV e PDF;
 - mantém os dados salvos no navegador;

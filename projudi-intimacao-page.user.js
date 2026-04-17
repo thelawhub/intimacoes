@@ -1,18 +1,21 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      4.8
+// @version      4.9
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
-// @description  Reúne intimações em uma página, exporta CSV/PDF e permite triagem local com foco em baixo consumo de memória.
+// @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
 // @license      CC BY-NC 4.0
-// @updateURL    https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
-// @downloadURL  https://gist.githubusercontent.com/lourencosv/ca9a3e181cfbf181862f16a08a4ee33f/raw/projudi-intimacao-page.user.js
+// @updateURL    https://raw.githubusercontent.com/thelawhub/intimacoes/refs/heads/main/projudi-intimacao-page.user.js
+// @downloadURL  https://raw.githubusercontent.com/thelawhub/intimacoes/refs/heads/main/projudi-intimacao-page.user.js
 // @match        *://projudi.tjgo.jus.br/*
 // @match        *://projudi-teste.tjgo.jus.br/*
 // @run-at       document-idle
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @connect      api.github.com
 // ==/UserScript==
@@ -57,6 +60,29 @@
     backup: 'pj-intimacoes-marcadas::backup'
   };
 
+  const DEADLINE = {
+    windowDays: 7,
+    targetHeaders: ['data limite', 'possivel data limite', 'possível data limite'],
+    filterDateKey: 'projudi_highlight_filter_date_v1',
+    filterEnabledKey: 'projudi_highlight_filter_enabled_v1',
+    filterModeKey: 'projudi_highlight_filter_mode_v1',
+    filterRangeStartKey: 'projudi_highlight_filter_range_start_v1',
+    filterRangeEndKey: 'projudi_highlight_filter_range_end_v1',
+    settingsSyncEvent: 'projudi:deadline-settings-changed',
+    classPrefix: 'tm-hl7d',
+    filterHiddenAttr: 'data-tm-filter-hidden',
+    cellAttr: 'data-tm-deadline-class'
+  };
+
+  const DEADLINE_WEEKDAY_PALETTE = [
+    { bg: 'rgba(255,205,210,1)', fg: 'rgba(183,28,28,1)' },
+    { bg: 'rgba(255,224,178,1)', fg: 'rgba(191,54,12,1)' },
+    { bg: 'rgba(255,249,196,1)', fg: 'rgba(245,127,23,1)' },
+    { bg: 'rgba(220,237,200,1)', fg: 'rgba(51,105,30,1)' },
+    { bg: 'rgba(200,230,201,1)', fg: 'rgba(27,94,32,1)' }
+  ];
+  const DEADLINE_WEEKEND_COLOR = { bg: 'rgba(227,242,253,1)', fg: 'rgba(13,71,161,1)' };
+
   const BACKUP_DEFAULTS = {
     enabled: false,
     gistId: '',
@@ -89,7 +115,7 @@
    * pageSignature: string,
    * refreshTimers: number[],
    * refreshNonce: number,
-   * menuCommandId: number | null,
+   * menuCommandIds: number[],
    * hostHooksAttached: boolean,
    * menuOpen: boolean,
    * modalOpen: boolean,
@@ -97,6 +123,9 @@
    * toastTimer: number,
    * backupTimer: number,
    * pdfPromise: Promise<void> | null,
+   * deadlineState: ReturnType<typeof buildDeadlineState>,
+   * deadlineCellAnalysisCache: WeakMap<HTMLTableCellElement, any>,
+   * deadlineTargetColsCache: WeakMap<HTMLTableElement, Set<number>>,
    * store: ReturnType<typeof loadStore>
    * }}
    */
@@ -109,7 +138,7 @@
     pageSignature: '',
     refreshTimers: [],
     refreshNonce: 0,
-    menuCommandId: null,
+    menuCommandIds: [],
     hostHooksAttached: false,
     menuOpen: false,
     modalOpen: false,
@@ -117,6 +146,9 @@
     toastTimer: 0,
     backupTimer: 0,
     pdfPromise: null,
+    deadlineState: buildDeadlineState(),
+    deadlineCellAnalysisCache: new WeakMap(),
+    deadlineTargetColsCache: new WeakMap(),
     store: loadStore()
   };
 
@@ -128,6 +160,7 @@
   function init() {
     injectHostStyles();
     attachHostHooks();
+    attachDeadlineHooks();
     registerMenuCommand();
     ensureActionMenu();
     updateActionPanelState();
@@ -364,6 +397,9 @@
     const nextContext = analyzeFrameContext(state.frame, state.frameDoc);
     state.pageContext = nextContext;
     updateActionMenuVisibility(nextContext);
+    syncDeadlineState();
+    injectDeadlineStyles(nextContext.doc);
+    processDeadlineRoot(nextContext.doc);
 
     if (!nextContext.isIntimationPage) {
       state.pageSignature = '';
@@ -381,6 +417,7 @@
 
     if (shouldSyncRows) {
       syncPageRows(nextContext);
+      processDeadlineRoot(nextContext.doc);
     }
 
     if (state.modalOpen) {
@@ -1048,15 +1085,16 @@
   function registerMenuCommand() {
     if (typeof GM_registerMenuCommand !== 'function') return;
 
-    if (state.menuCommandId !== null && typeof GM_unregisterMenuCommand === 'function') {
-      safeRun('Falha ao remover comando anterior do menu.', () => {
-        GM_unregisterMenuCommand(state.menuCommandId);
-      });
+    if (state.menuCommandIds.length && typeof GM_unregisterMenuCommand === 'function') {
+      for (const commandId of state.menuCommandIds.splice(0)) {
+        safeRun('Falha ao remover comando anterior do menu.', () => {
+          GM_unregisterMenuCommand(commandId);
+        });
+      }
     }
 
-    state.menuCommandId = GM_registerMenuCommand('Gerenciar Intimações', () => {
-      openModal();
-    });
+    state.menuCommandIds.push(GM_registerMenuCommand('Gerenciar Intimações', () => openModal()));
+    state.menuCommandIds.push(GM_registerMenuCommand('Gerenciar Prazos', () => openDeadlinePanel()));
   }
 
   /**
@@ -1707,6 +1745,7 @@
     body.appendChild(buildMenuButton('Exportar CSV', () => exportCSV()));
     body.appendChild(buildMenuButton('Exportar PDF', () => exportPDF()));
     body.appendChild(buildMenuButton('Minhas intimações', () => openModal()));
+    body.appendChild(buildMenuButton('Gerenciar prazos', () => openDeadlinePanel()));
 
     panel.append(head, body);
 
@@ -2990,6 +3029,801 @@
     ];
     const time = [String(now.getHours()).padStart(2, '0'), String(now.getMinutes()).padStart(2, '0')].join('-');
     return `${baseName}_${parts.join('-')}_${time}.${extension}`;
+  }
+
+  /**
+   * Anexa os hooks globais usados pelo modulo de prazos.
+   */
+  function attachDeadlineHooks() {
+    window.addEventListener(DEADLINE.settingsSyncEvent, () => {
+      syncDeadlineState(true);
+      if (state.frameDoc) {
+        clearDeadlineProcessedState(state.frameDoc);
+        injectDeadlineStyles(state.frameDoc);
+        processDeadlineRoot(state.frameDoc);
+      }
+    });
+
+    window.addEventListener('focus', maybeRefreshDeadlinesForClockOrSettings);
+    window.addEventListener('pageshow', maybeRefreshDeadlinesForClockOrSettings);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) maybeRefreshDeadlinesForClockOrSettings();
+    });
+  }
+
+  /**
+   * Atualiza prazos quando a data do dia ou configuracoes salvas mudam.
+   */
+  function maybeRefreshDeadlinesForClockOrSettings() {
+    const previous = state.deadlineState;
+    const next = buildDeadlineState();
+    if (next.todayYmd === previous.todayYmd && next.settingsSnapshot === previous.settingsSnapshot) return;
+    state.deadlineState = next;
+    state.deadlineCellAnalysisCache = new WeakMap();
+    if (!state.frameDoc) return;
+    clearDeadlineProcessedState(state.frameDoc);
+    injectDeadlineStyles(state.frameDoc);
+    processDeadlineRoot(state.frameDoc);
+  }
+
+  /**
+   * Sincroniza o estado derivado dos prazos.
+   * @param {boolean=} force
+   */
+  function syncDeadlineState(force = false) {
+    const next = buildDeadlineState();
+    if (!force && next.todayYmd === state.deadlineState.todayYmd && next.settingsSnapshot === state.deadlineState.settingsSnapshot) {
+      return;
+    }
+    state.deadlineState = next;
+    state.deadlineCellAnalysisCache = new WeakMap();
+  }
+
+  /**
+   * Le armazenamento do modulo de prazos.
+   * @param {string} key
+   * @param {any=} fallback
+   * @returns {any}
+   */
+  function getDeadlineStored(key, fallback = '') {
+    try {
+      if (typeof GM_getValue === 'function') return GM_getValue(key, fallback);
+      const value = localStorage.getItem(key);
+      return value === null ? fallback : value;
+    } catch (error) {
+      logWarn(`Falha ao ler configuracao de prazo "${key}".`, error);
+      return fallback;
+    }
+  }
+
+  /**
+   * Salva armazenamento do modulo de prazos.
+   * @param {string} key
+   * @param {any} value
+   */
+  function setDeadlineStored(key, value) {
+    try {
+      if (typeof GM_setValue === 'function') GM_setValue(key, value);
+      else localStorage.setItem(key, String(value));
+    } catch (error) {
+      logWarn(`Falha ao salvar configuracao de prazo "${key}".`, error);
+    }
+  }
+
+  /**
+   * Remove uma chave de armazenamento do modulo de prazos.
+   * @param {string} key
+   */
+  function clearDeadlineStored(key) {
+    try {
+      if (typeof GM_deleteValue === 'function') GM_deleteValue(key);
+      else localStorage.removeItem(key);
+    } catch (error) {
+      logWarn(`Falha ao limpar configuracao de prazo "${key}".`, error);
+    }
+  }
+
+  function getDeadlineFilterDate() {
+    return String(getDeadlineStored(DEADLINE.filterDateKey, '') || '');
+  }
+
+  function getDeadlineFilterEnabled() {
+    const raw = getDeadlineStored(DEADLINE.filterEnabledKey, false);
+    return raw === true || raw === 'true' || raw === 1 || raw === '1';
+  }
+
+  function setDeadlineFilterEnabled(enabled) {
+    setDeadlineStored(DEADLINE.filterEnabledKey, Boolean(enabled));
+  }
+
+  function getDeadlineFilterMode() {
+    const mode = String(getDeadlineStored(DEADLINE.filterModeKey, 'exact') || 'exact').toLowerCase();
+    if (mode === 'range' || mode === 'missing') return mode;
+    return 'exact';
+  }
+
+  function setDeadlineFilterMode(mode) {
+    setDeadlineStored(DEADLINE.filterModeKey, mode === 'range' || mode === 'missing' ? mode : 'exact');
+  }
+
+  function getDeadlineRangeStart() {
+    return String(getDeadlineStored(DEADLINE.filterRangeStartKey, '') || '');
+  }
+
+  function getDeadlineRangeEnd() {
+    return String(getDeadlineStored(DEADLINE.filterRangeEndKey, '') || '');
+  }
+
+  /**
+   * Monta o estado derivado do destaque de prazos.
+   * @returns {{todayYmd: string, byYmd: Map<string, any>, entries: any[], highlightSnapshot: string, settingsSnapshot: string}}
+   */
+  function buildDeadlineState() {
+    const today = cloneDay(new Date());
+    const windowDates = [];
+    for (let index = 0; index < DEADLINE.windowDays; index += 1) windowDates.push(addDays(today, index));
+    const weekdays = windowDates.map((date, index) => ({ date, index })).filter((entry) => !isWeekend(entry.date));
+    const entries = windowDates.map((date, offset) => {
+      if (isWeekend(date)) {
+        return {
+          ymd: toYmd(date),
+          className: `${DEADLINE.classPrefix}-weekend`,
+          tooltip: `Fim de semana (${weekdayShortPT(date)}) • ${formatDay(date)}`,
+          color: DEADLINE_WEEKEND_COLOR
+        };
+      }
+      const weekdayPos = weekdays.findIndex((entry) => entry.index === offset);
+      const color = interpolateDeadlinePalette(
+        DEADLINE_WEEKDAY_PALETTE,
+        Math.max(0, weekdayPos),
+        Math.max(1, weekdays.length)
+      );
+      return {
+        ymd: toYmd(date),
+        className: `${DEADLINE.classPrefix}-wd-${weekdayPos}`,
+        tooltip: `Possível vencimento em ${offset === 0 ? 'HOJE' : `${offset} dia(s)`} • ${weekdayShortPT(date)} • ${formatDay(date)}`,
+        color
+      };
+    });
+
+    return {
+      todayYmd: toYmd(today),
+      byYmd: new Map(entries.map((entry) => [entry.ymd, entry])),
+      entries,
+      highlightSnapshot: entries.map((entry) => entry.ymd).join('|'),
+      settingsSnapshot: JSON.stringify({
+        filterDate: getDeadlineFilterDate(),
+        filterEnabled: getDeadlineFilterEnabled(),
+        filterMode: getDeadlineFilterMode(),
+        filterRangeStart: getDeadlineRangeStart(),
+        filterRangeEnd: getDeadlineRangeEnd()
+      })
+    };
+  }
+
+  /**
+   * Injeta CSS de destaque de prazo no documento alvo.
+   * @param {Document} doc
+   */
+  function injectDeadlineStyles(doc) {
+    const baseId = `${DEADLINE.classPrefix}-style`;
+    if (!doc.getElementById(baseId)) {
+      const style = doc.createElement('style');
+      style.id = baseId;
+      style.textContent = `
+        td.${DEADLINE.classPrefix}-cell {
+          position: relative;
+          font-weight: 600 !important;
+          border-radius: 4px;
+          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+        }
+        td.${DEADLINE.classPrefix}-cell[data-tooltip] { cursor: help; }
+        td.${DEADLINE.classPrefix}-cell[data-tooltip]::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          left: 50%;
+          top: -6px;
+          transform: translateX(-50%) translateY(-100%);
+          background: #333;
+          color: #fff;
+          padding: 4px 8px;
+          font-size: 11px;
+          border-radius: 4px;
+          white-space: nowrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity .2s;
+          z-index: 99999;
+        }
+        td.${DEADLINE.classPrefix}-cell[data-tooltip]::before {
+          content: "";
+          position: absolute;
+          left: 50%;
+          top: -6px;
+          transform: translateX(-50%);
+          border-width: 5px;
+          border-style: solid;
+          border-color: transparent transparent #333 transparent;
+          opacity: 0;
+          transition: opacity .2s;
+          z-index: 99998;
+        }
+        td.${DEADLINE.classPrefix}-cell:hover::after,
+        td.${DEADLINE.classPrefix}-cell:hover::before { opacity: 1; }
+      `;
+      (doc.head || doc.documentElement).appendChild(style);
+    }
+
+    const dynId = `${DEADLINE.classPrefix}-dyn`;
+    doc.getElementById(dynId)?.remove();
+    const dyn = doc.createElement('style');
+    dyn.id = dynId;
+    dyn.textContent = state.deadlineState.entries
+      .map((entry) => `td.${DEADLINE.classPrefix}-cell.${entry.className}{background-color:${entry.color.bg} !important;color:${entry.color.fg} !important;}`)
+      .join('\n');
+    (doc.head || doc.documentElement).appendChild(dyn);
+  }
+
+  /**
+   * Processa tabelas de prazo dentro de um documento ou elemento.
+   * @param {Document | Element} root
+   */
+  function processDeadlineRoot(root) {
+    getDeadlineTablesFromRoot(root).forEach(processDeadlineTable);
+  }
+
+  /**
+   * Reverte o estado visual aplicado pelo filtro/destaque de prazo.
+   * @param {Document | Element} root
+   */
+  function clearDeadlineProcessedState(root) {
+    root.querySelectorAll?.(`td.${DEADLINE.classPrefix}-cell`).forEach(clearDeadlineCellHighlight);
+    root.querySelectorAll?.(`tr[${DEADLINE.filterHiddenAttr}="1"]`).forEach(showDeadlineRow);
+  }
+
+  /**
+   * Processa uma tabela que contenha coluna de prazo.
+   * @param {HTMLTableElement} table
+   */
+  function processDeadlineTable(table) {
+    const targetCols = getDeadlineColumnIndexes(table);
+    if (!targetCols.size) return;
+    const filterSpec = getActiveDeadlineFilterSpec();
+    const rows = table.querySelectorAll('tbody tr');
+
+    for (const row of rows) {
+      const cells = getDeadlineRowCells(row);
+      for (let col = 0; col < cells.length; col += 1) {
+        if (targetCols.has(col)) applyDeadlineHighlightToCell(cells[col]);
+      }
+
+      if (!filterSpec) showDeadlineRow(row);
+      else if (rowMatchesDeadlineFilter(row, targetCols, filterSpec)) showDeadlineRow(row);
+      else hideDeadlineRow(row);
+    }
+  }
+
+  /**
+   * Calcula os indices de colunas de prazo.
+   * @param {HTMLTableElement} table
+   * @returns {Set<number>}
+   */
+  function getDeadlineColumnIndexes(table) {
+    const cached = state.deadlineTargetColsCache.get(table);
+    if (cached) return cached;
+
+    const rows = table.tHead?.rows?.length
+      ? Array.from(table.tHead.rows)
+      : Array.from(table.querySelectorAll('tr')).slice(0, 2);
+    const headerRow = rows[rows.length - 1];
+    const indexes = new Set();
+    let index = 0;
+
+    for (const cell of Array.from(headerRow?.children || [])) {
+      const span = Number.parseInt(cell.getAttribute('colspan') || '1', 10) || 1;
+      const text = normalizeText(cell.textContent || '');
+      if (DEADLINE.targetHeaders.some((header) => text.includes(normalizeText(header)))) {
+        for (let offset = 0; offset < span; offset += 1) indexes.add(index + offset);
+      }
+      index += span;
+    }
+
+    state.deadlineTargetColsCache.set(table, indexes);
+    return indexes;
+  }
+
+  /**
+   * Retorna todas as tabelas afetadas por uma raiz.
+   * @param {Document | Element | Node} root
+   * @returns {HTMLTableElement[]}
+   */
+  function getDeadlineTablesFromRoot(root) {
+    if (!root) return [];
+    const tables = new Set();
+    if (root.nodeName === 'TABLE') tables.add(root);
+    if (root.nodeType === 1) {
+      const parentTable = typeof root.closest === 'function' ? root.closest('table') : null;
+      if (parentTable) tables.add(parentTable);
+      root.querySelectorAll?.('table').forEach((table) => tables.add(table));
+    } else if (root.nodeType === 9) {
+      root.querySelectorAll('table').forEach((table) => tables.add(table));
+    }
+    return Array.from(tables);
+  }
+
+  /**
+   * @param {Element} row
+   * @returns {HTMLTableCellElement[]}
+   */
+  function getDeadlineRowCells(row) {
+    return Array.from(row.children || []).filter((node) => node.nodeName === 'TD');
+  }
+
+  /**
+   * @param {HTMLTableCellElement} cell
+   */
+  function clearDeadlineCellHighlight(cell) {
+    const previousClass = cell.getAttribute(DEADLINE.cellAttr);
+    if (previousClass) cell.classList.remove(previousClass);
+    cell.classList.remove(`${DEADLINE.classPrefix}-cell`);
+    cell.removeAttribute(DEADLINE.cellAttr);
+    cell.removeAttribute('data-tooltip');
+  }
+
+  /**
+   * @param {HTMLTableCellElement} cell
+   */
+  function applyDeadlineHighlightToCell(cell) {
+    clearDeadlineCellHighlight(cell);
+    const entry = analyzeDeadlineCell(cell).highlightEntry;
+    if (!entry) return;
+    cell.classList.add(`${DEADLINE.classPrefix}-cell`, entry.className);
+    cell.setAttribute(DEADLINE.cellAttr, entry.className);
+    cell.setAttribute('data-tooltip', entry.tooltip);
+  }
+
+  /**
+   * @param {HTMLTableCellElement} cell
+   * @returns {{text: string, missing: boolean, dates: Date[], highlightEntry: any, highlightSnapshot: string}}
+   */
+  function analyzeDeadlineCell(cell) {
+    const text = String(cell?.textContent || '').trim();
+    const cached = state.deadlineCellAnalysisCache.get(cell);
+    if (cached && cached.text === text && cached.highlightSnapshot === state.deadlineState.highlightSnapshot) return cached;
+
+    const dates = extractDeadlineDatesFromText(text);
+    let highlightEntry = null;
+    for (const date of dates) {
+      const entry = state.deadlineState.byYmd.get(toYmd(date));
+      if (entry) {
+        highlightEntry = entry;
+        break;
+      }
+    }
+
+    const analysis = {
+      text,
+      missing: isMissingDeadlineText(text),
+      dates,
+      highlightEntry,
+      highlightSnapshot: state.deadlineState.highlightSnapshot
+    };
+    state.deadlineCellAnalysisCache.set(cell, analysis);
+    return analysis;
+  }
+
+  /**
+   * @returns {{mode: 'missing'} | {mode: 'range', from: Date, to: Date} | {mode: 'exact', date: Date, ymd: string} | null}
+   */
+  function getActiveDeadlineFilterSpec() {
+    if (!getDeadlineFilterEnabled()) return null;
+    const mode = getDeadlineFilterMode();
+    if (mode === 'missing') return { mode: 'missing' };
+    if (mode === 'range') {
+      const start = ymdToDate(getDeadlineRangeStart());
+      const end = ymdToDate(getDeadlineRangeEnd());
+      if (!start || !end) return null;
+      return { mode: 'range', from: start <= end ? start : end, to: start <= end ? end : start };
+    }
+    const exact = ymdToDate(getDeadlineFilterDate()) || cloneDay(new Date());
+    return { mode: 'exact', date: exact, ymd: toYmd(exact) };
+  }
+
+  /**
+   * @param {Element} row
+   * @param {Set<number>} targetCols
+   * @param {NonNullable<ReturnType<typeof getActiveDeadlineFilterSpec>>} filterSpec
+   */
+  function rowMatchesDeadlineFilter(row, targetCols, filterSpec) {
+    const cells = getDeadlineRowCells(row);
+    for (let col = 0; col < cells.length; col += 1) {
+      if (!targetCols.has(col)) continue;
+      const analysis = analyzeDeadlineCell(cells[col]);
+      if (filterSpec.mode === 'missing') {
+        if (analysis.missing) return true;
+        continue;
+      }
+      for (const date of analysis.dates) {
+        if (filterSpec.mode === 'exact' && toYmd(date) === filterSpec.ymd) return true;
+        if (filterSpec.mode === 'range' && date >= filterSpec.from && date <= filterSpec.to) return true;
+      }
+    }
+    return false;
+  }
+
+  function hideDeadlineRow(row) {
+    row.style.setProperty('display', 'none', 'important');
+    row.setAttribute(DEADLINE.filterHiddenAttr, '1');
+  }
+
+  function showDeadlineRow(row) {
+    if (!row.hasAttribute(DEADLINE.filterHiddenAttr)) return;
+    row.style.removeProperty('display');
+    row.removeAttribute(DEADLINE.filterHiddenAttr);
+  }
+
+  /**
+   * Abre o painel de filtros do modulo de prazos.
+   */
+  function openDeadlinePanel() {
+    const overlayId = 'pjip-deadline-overlay';
+    if (document.getElementById(overlayId)) return;
+
+    const todayYmd = toYmd(cloneDay(new Date()));
+    const filterDateInitial = getDeadlineFilterDate() || todayYmd;
+    const rangeStartInitial = getDeadlineRangeStart() || filterDateInitial;
+    const rangeEndInitial = getDeadlineRangeEnd() || filterDateInitial;
+
+    const overlay = document.createElement('div');
+    overlay.id = overlayId;
+    overlay.innerHTML = `
+      <style>
+        #${overlayId} {
+          position: fixed;
+          inset: 0;
+          z-index: 2147483647;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 18px;
+          background: rgba(8, 28, 52, .34);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          font-family: Arial, sans-serif;
+        }
+        #${overlayId} * { box-sizing: border-box; }
+        #${overlayId} .pjip-deadline-panel {
+          width: min(640px, calc(100vw - 24px));
+          max-height: min(88vh, 820px);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          background: #fff;
+          color: #0f172a;
+          border: 1px solid #cfdaea;
+          border-radius: 14px;
+          box-shadow: 0 24px 54px rgba(8, 32, 61, .22);
+        }
+        #${overlayId} .pjip-deadline-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 14px 16px;
+          color: #fff;
+          background: linear-gradient(180deg, #2f72b8 0%, #245f9d 100%);
+        }
+        #${overlayId} h2 { margin: 0; font-size: 21px; }
+        #${overlayId} .pjip-deadline-sub { margin-top: 4px; font-size: 13px; opacity: .92; }
+        #${overlayId} .pjip-deadline-body { display: grid; gap: 12px; padding: 16px; overflow: auto; }
+        #${overlayId} .pjip-deadline-card { border: 1px solid #dbe3ef; border-radius: 8px; padding: 12px; background: #fff; }
+        #${overlayId} .pjip-deadline-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: #173a61; }
+        #${overlayId} .pjip-deadline-desc { margin-top: 5px; font-size: 12px; color: #5f6f86; }
+        #${overlayId} .pjip-deadline-row { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 8px; margin-top: 10px; }
+        #${overlayId} .pjip-deadline-range { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 180px; }
+        #${overlayId} input {
+          width: 100%;
+          min-width: 0;
+          height: 38px;
+          padding: 6px 8px;
+          border: 1px solid #cbd8e8;
+          border-radius: 8px;
+          color: #0f172a;
+          background: #fff;
+          font-size: 14px;
+        }
+        #${overlayId} button {
+          min-height: 38px;
+          border: 1px solid #cbd8e8;
+          border-radius: 8px;
+          background: #fff;
+          color: #173a61;
+          cursor: pointer;
+          font: 600 13px Arial, sans-serif;
+          padding: 0 12px;
+        }
+        #${overlayId} button[data-primary="true"] { color: #fff; background: #2b69aa; border-color: #2b69aa; }
+        #${overlayId} .pjip-deadline-close {
+          width: 34px;
+          min-width: 34px;
+          height: 34px;
+          border: 0;
+          border-radius: 999px;
+          background: rgba(255,255,255,.18);
+          color: #fff;
+          font-size: 20px;
+          padding: 0;
+        }
+        #${overlayId} .pjip-deadline-footer {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          align-items: center;
+          padding: 12px 16px;
+          border-top: 1px solid #dbe3ef;
+          background: #f7f9fc;
+        }
+        #${overlayId} .pjip-deadline-status { font-size: 12px; color: #405269; }
+        @media (max-width: 640px) {
+          #${overlayId} .pjip-deadline-row,
+          #${overlayId} .pjip-deadline-range { grid-template-columns: 1fr; }
+        }
+      </style>
+      <section class="pjip-deadline-panel" role="dialog" aria-modal="true" aria-label="Gerenciar prazos">
+        <header class="pjip-deadline-head">
+          <div>
+            <h2>Prazos</h2>
+            <div class="pjip-deadline-sub">Destaques automáticos e filtros por data limite</div>
+          </div>
+          <button type="button" class="pjip-deadline-close" data-role="close" aria-label="Fechar">×</button>
+        </header>
+        <div class="pjip-deadline-body">
+          <div class="pjip-deadline-card">
+            <div class="pjip-deadline-title">Filtro por data exata</div>
+            <div class="pjip-deadline-desc">Exibe somente linhas cuja coluna de prazo corresponda à data escolhida.</div>
+            <div class="pjip-deadline-row">
+              <input data-role="date" type="date" value="${filterDateInitial}">
+              <button type="button" data-role="apply-date" data-primary="true">Aplicar</button>
+            </div>
+          </div>
+          <div class="pjip-deadline-card">
+            <div class="pjip-deadline-title">Filtro por período</div>
+            <div class="pjip-deadline-desc">Exibe somente linhas com prazo dentro do intervalo informado.</div>
+            <div class="pjip-deadline-row pjip-deadline-range">
+              <input data-role="range-start" type="date" value="${rangeStartInitial}">
+              <input data-role="range-end" type="date" value="${rangeEndInitial}">
+              <button type="button" data-role="apply-range" data-primary="true">Aplicar período</button>
+            </div>
+          </div>
+          <div class="pjip-deadline-card">
+            <div class="pjip-deadline-title">Sem data limite</div>
+            <div class="pjip-deadline-desc">Localiza linhas com prazo vazio ou preenchido apenas com traço.</div>
+            <div class="pjip-deadline-row">
+              <span></span>
+              <button type="button" data-role="apply-missing" data-primary="true">Localizar sem prazo</button>
+            </div>
+          </div>
+        </div>
+        <footer class="pjip-deadline-footer">
+          <div class="pjip-deadline-status" data-role="status"></div>
+          <div>
+            <button type="button" data-role="clear">Limpar</button>
+            <button type="button" data-role="close">Fechar</button>
+          </div>
+        </footer>
+      </section>
+    `;
+
+    document.body.appendChild(overlay);
+    const status = overlay.querySelector('[data-role="status"]');
+    const setStatus = (message) => {
+      if (status) status.textContent = message;
+    };
+    const close = () => overlay.remove();
+    const refreshStatus = () => setStatus(describeActiveDeadlineFilter());
+
+    overlay.querySelectorAll('[data-role="close"]').forEach((button) => button.addEventListener('click', close));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+
+    overlay.querySelector('[data-role="apply-date"]')?.addEventListener('click', () => {
+      const ymd = /** @type {HTMLInputElement | null} */ (overlay.querySelector('[data-role="date"]'))?.value || '';
+      if (!ymdToDate(ymd)) {
+        setStatus('Selecione uma data válida.');
+        return;
+      }
+      setDeadlineStored(DEADLINE.filterDateKey, ymd);
+      setDeadlineFilterMode('exact');
+      setDeadlineFilterEnabled(true);
+      applyDeadlineSettingsChange();
+      refreshStatus();
+    });
+
+    overlay.querySelector('[data-role="apply-range"]')?.addEventListener('click', () => {
+      const start = /** @type {HTMLInputElement | null} */ (overlay.querySelector('[data-role="range-start"]'))?.value || '';
+      const end = /** @type {HTMLInputElement | null} */ (overlay.querySelector('[data-role="range-end"]'))?.value || '';
+      if (!ymdToDate(start) || !ymdToDate(end)) {
+        setStatus('Selecione data inicial e final válidas.');
+        return;
+      }
+      setDeadlineStored(DEADLINE.filterRangeStartKey, start);
+      setDeadlineStored(DEADLINE.filterRangeEndKey, end);
+      setDeadlineFilterMode('range');
+      setDeadlineFilterEnabled(true);
+      applyDeadlineSettingsChange();
+      refreshStatus();
+    });
+
+    overlay.querySelector('[data-role="apply-missing"]')?.addEventListener('click', () => {
+      setDeadlineFilterMode('missing');
+      setDeadlineFilterEnabled(true);
+      applyDeadlineSettingsChange();
+      refreshStatus();
+    });
+
+    overlay.querySelector('[data-role="clear"]')?.addEventListener('click', () => {
+      clearDeadlineStored(DEADLINE.filterDateKey);
+      clearDeadlineStored(DEADLINE.filterRangeStartKey);
+      clearDeadlineStored(DEADLINE.filterRangeEndKey);
+      setDeadlineFilterMode('exact');
+      setDeadlineFilterEnabled(false);
+      applyDeadlineSettingsChange();
+      refreshStatus();
+    });
+
+    refreshStatus();
+  }
+
+  /**
+   * Aplica uma mudanca de configuracao de prazos ao iframe atual.
+   */
+  function applyDeadlineSettingsChange() {
+    syncDeadlineState(true);
+    if (state.frameDoc) {
+      clearDeadlineProcessedState(state.frameDoc);
+      injectDeadlineStyles(state.frameDoc);
+      processDeadlineRoot(state.frameDoc);
+    }
+    broadcastDeadlineSettingsSync();
+  }
+
+  /**
+   * Notifica janelas do mesmo host sobre mudancas de prazo.
+   */
+  function broadcastDeadlineSettingsSync() {
+    try {
+      window.dispatchEvent(new CustomEvent(DEADLINE.settingsSyncEvent));
+      state.frameWin?.dispatchEvent(new CustomEvent(DEADLINE.settingsSyncEvent));
+    } catch (_) {}
+  }
+
+  /**
+   * @returns {string}
+   */
+  function describeActiveDeadlineFilter() {
+    if (!getDeadlineFilterEnabled()) return `Filtro desativado. Destaque automático: hoje + próximos ${DEADLINE.windowDays - 1} dias.`;
+    const mode = getDeadlineFilterMode();
+    if (mode === 'missing') return 'Filtro ativo: sem data limite.';
+    if (mode === 'range') {
+      const start = ymdToDate(getDeadlineRangeStart());
+      const end = ymdToDate(getDeadlineRangeEnd());
+      if (!start || !end) return 'Filtro por período incompleto.';
+      const from = start <= end ? start : end;
+      const to = start <= end ? end : start;
+      return `Filtro ativo: ${formatDay(from)} até ${formatDay(to)}.`;
+    }
+    const exact = ymdToDate(getDeadlineFilterDate());
+    return exact ? `Filtro ativo: ${formatDay(exact)}.` : 'Filtro por data incompleto.';
+  }
+
+  function cloneDay(date) {
+    const copy = new Date(date.getTime());
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+  }
+
+  function addDays(date, amount) {
+    const copy = new Date(date.getTime());
+    copy.setDate(copy.getDate() + amount);
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+  }
+
+  function ymdToDate(ymd) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(year, month - 1, day);
+    date.setHours(0, 0, 0, 0);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+  }
+
+  function parseDeadlineDateToken(dayValue, monthValue, yearValue) {
+    const day = Number(dayValue);
+    const month = Number(monthValue);
+    let year = Number(yearValue);
+    if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) return null;
+    if (String(yearValue).length === 2) year += 2000;
+    const date = new Date(year, month - 1, day);
+    date.setHours(0, 0, 0, 0);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+  }
+
+  function extractDeadlineDatesFromText(text) {
+    const dates = [];
+    const regexp = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2}|\d{4})\b/g;
+    let match;
+    while ((match = regexp.exec(String(text || ''))) !== null) {
+      const date = parseDeadlineDateToken(match[1], match[2], match[3]);
+      if (date) dates.push(date);
+    }
+    return dates;
+  }
+
+  function isMissingDeadlineText(text) {
+    const normalized = String(text || '').trim();
+    return normalized === '' || /^[-–—]+$/.test(normalized);
+  }
+
+  function toYmd(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  function formatDay(date) {
+    return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  }
+
+  function weekdayShortPT(date) {
+    return ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'][date.getDay()];
+  }
+
+  function isWeekend(date) {
+    const day = date.getDay();
+    return day === 0 || day === 6;
+  }
+
+  function interpolateDeadlinePalette(palette, index, total) {
+    if (total <= 1) return palette[0];
+    const position = index / (total - 1);
+    const segmentCount = palette.length - 1;
+    const scaled = position * segmentCount;
+    const floor = Math.floor(scaled);
+    const fraction = scaled - floor;
+    const current = palette[Math.min(floor, palette.length - 1)];
+    const next = palette[Math.min(floor + 1, palette.length - 1)];
+    const bg0 = parseRgba(current.bg);
+    const bg1 = parseRgba(next.bg);
+    const fg0 = parseRgba(current.fg);
+    const fg1 = parseRgba(next.fg);
+    if (!bg0 || !bg1 || !fg0 || !fg1) return palette[Math.min(index, palette.length - 1)];
+    return {
+      bg: rgbaToString(interpolateRgba(bg0, bg1, fraction)),
+      fg: rgbaToString(interpolateRgba(fg0, fg1, fraction))
+    };
+  }
+
+  function parseRgba(value) {
+    const match = /rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i.exec(value);
+    if (!match) return null;
+    return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]), a: Number(match[4]) };
+  }
+
+  function interpolateRgba(left, right, fraction) {
+    return {
+      r: left.r + (right.r - left.r) * fraction,
+      g: left.g + (right.g - left.g) * fraction,
+      b: left.b + (right.b - left.b) * fraction,
+      a: left.a + (right.a - left.a) * fraction
+    };
+  }
+
+  function rgbaToString(color) {
+    return `rgba(${Math.round(color.r)},${Math.round(color.g)},${Math.round(color.b)},${color.a})`;
   }
 
   /**
