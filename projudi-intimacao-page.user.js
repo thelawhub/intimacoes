@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.1
+// @version      5.2
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1259,39 +1259,39 @@
         display: flex;
       }
       #${IDS.modalPanel} {
-        width: min(980px, calc(100vw - 36px));
-        max-height: min(86vh, 920px);
+        width: min(1180px, calc(100vw - 32px));
+        height: min(88vh, 920px);
         display: flex;
         flex-direction: column;
         background: #fff;
         border: 1px solid #cfdaea;
-        border-radius: 20px;
+        border-radius: 14px;
         box-shadow: 0 24px 54px rgba(8, 32, 61, .22);
         overflow: hidden;
       }
       .pjip-modal-head {
         display: flex;
-        align-items: flex-start;
+        align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 14px 16px 12px;
+        padding: 12px 16px;
         color: #fff;
         background: linear-gradient(180deg, #2f72b8 0%, #245f9d 100%);
       }
       .pjip-modal-title {
         margin: 0;
-        font-size: 24px;
+        font-size: 18px;
         font-weight: 700;
       }
       .pjip-modal-subtitle {
-        margin-top: 4px;
-        font-size: 13px;
+        margin-top: 2px;
+        font-size: 12px;
         opacity: .92;
       }
       .pjip-modal-close {
-        width: 38px;
-        min-width: 38px;
-        height: 38px;
+        width: 32px;
+        min-width: 32px;
+        height: 32px;
         border: 0;
         border-radius: 999px;
         background: rgba(255,255,255,.18);
@@ -1304,23 +1304,31 @@
       }
       .pjip-modal-body {
         display: grid;
-        gap: 14px;
-        padding: 18px;
+        grid-template-columns: 292px minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas:
+          "rail deadline"
+          "rail list";
+        gap: 12px;
+        padding: 12px;
         overflow: auto;
-        background: linear-gradient(180deg, #f8fbff 0%, #f2f6fc 100%);
+        background: #f4f7fb;
       }
       .pjip-overview {
+        grid-area: rail;
         display: grid;
-        grid-template-columns: minmax(0, 1.4fr) minmax(280px, .9fr);
-        gap: 14px;
+        align-content: start;
+        gap: 12px;
+        position: sticky;
+        top: 0;
       }
       .pjip-summary {
         display: grid;
         gap: 12px;
-        padding: 16px 18px;
+        padding: 14px;
         border: 1px solid #d6e0ef;
-        border-radius: 16px;
-        background: linear-gradient(135deg, #fefefe 0%, #f5f9ff 100%);
+        border-radius: 8px;
+        background: #fff;
         box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
       .pjip-summary-head {
@@ -1331,15 +1339,15 @@
       }
       .pjip-summary-kicker {
         color: #33537a;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
-        letter-spacing: .08em;
+        letter-spacing: .04em;
         text-transform: uppercase;
       }
       .pjip-summary-title {
-        margin-top: 6px;
+        margin-top: 5px;
         color: #15385f;
-        font-size: 24px;
+        font-size: 22px;
         font-weight: 800;
         line-height: 1.1;
       }
@@ -1351,25 +1359,37 @@
       .pjip-summary-actions {
         display: flex;
         flex-wrap: wrap;
-        justify-content: flex-end;
+        justify-content: flex-start;
         gap: 8px;
       }
       .pjip-summary-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 10px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
       }
       .pjip-stat {
+        appearance: none;
         display: grid;
         gap: 3px;
-        padding: 12px 13px;
+        padding: 10px 11px;
         border: 1px solid #d7e2f0;
-        border-radius: 14px;
+        border-radius: 8px;
         background: #fff;
+        cursor: pointer;
+        font: inherit;
+        text-align: left;
+      }
+      .pjip-stat:hover {
+        border-color: #9fbbe0;
+        box-shadow: 0 3px 10px rgba(15, 54, 102, .08);
+      }
+      .pjip-stat[data-active="true"] {
+        border-color: #1f69d5;
+        box-shadow: inset 0 0 0 1px #1f69d5;
       }
       .pjip-stat-value {
         color: #143f70;
-        font-size: 24px;
+        font-size: 22px;
         font-weight: 800;
         line-height: 1;
       }
@@ -1407,9 +1427,9 @@
       .pjip-section-title {
         margin: 0 0 0 2px;
         color: #334155;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
-        letter-spacing: .03em;
+        letter-spacing: .04em;
         text-transform: uppercase;
       }
       .pjip-toolbar,
@@ -1419,9 +1439,9 @@
       .pjip-item {
         display: grid;
         gap: 10px;
-        padding: 14px 16px;
+        padding: 12px;
         border: 1px solid #d6e0ef;
-        border-radius: 12px;
+        border-radius: 8px;
         background: #fff;
         box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
       }
@@ -1434,8 +1454,8 @@
         min-width: 0;
         box-sizing: border-box;
         border: 1px solid #c9d6e9;
-        border-radius: 10px;
-        padding: 9px 10px;
+        border-radius: 6px;
+        padding: 8px 9px;
         font: inherit;
       }
       .pjip-toolbar-grid {
@@ -1446,15 +1466,16 @@
       }
       .pjip-toolbar-row {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: 1fr;
         gap: 10px;
       }
       .pjip-deadline {
-        gap: 14px;
+        grid-area: deadline;
+        gap: 10px;
       }
       .pjip-deadline-head {
         display: flex;
-        align-items: flex-start;
+        align-items: center;
         justify-content: space-between;
         gap: 12px;
       }
@@ -1465,36 +1486,36 @@
       }
       .pjip-deadline-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: minmax(210px, .8fr) minmax(310px, 1.1fr) minmax(230px, .8fr);
         gap: 10px;
       }
       .pjip-deadline-card {
         display: grid;
         gap: 8px;
-        padding: 12px;
+        padding: 10px;
         border: 1px solid #dbe3ef;
-        border-radius: 10px;
-        background: #f8fbff;
+        border-radius: 8px;
+        background: #f8fafc;
       }
       .pjip-deadline-card-title {
         color: #173a61;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         letter-spacing: .03em;
         text-transform: uppercase;
       }
       .pjip-deadline-card-desc {
         color: #61748d;
-        font-size: 12px;
+        font-size: 11px;
         line-height: 1.4;
       }
       .pjip-deadline-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 150px;
+        grid-template-columns: minmax(0, 1fr) 104px;
         gap: 8px;
       }
       .pjip-deadline-row--range {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 150px;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 120px;
       }
       .pjip-field {
         display: grid;
@@ -1504,25 +1525,24 @@
       .pjip-field label {
         display: block;
         color: #47627f;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         letter-spacing: .02em;
         line-height: 1.2;
       }
       .pjip-checks {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        font-size: 14px;
+        display: grid;
+        gap: 8px;
+        font-size: 12px;
         color: #375272;
       }
       .pjip-checks label {
-        display: inline-flex;
+        display: flex;
         align-items: center;
         gap: 6px;
-        padding: 8px 10px;
+        padding: 8px 9px;
         border: 1px solid #dbe3ef;
-        border-radius: 999px;
+        border-radius: 6px;
         background: #f8fbff;
         cursor: pointer;
       }
@@ -1538,7 +1558,9 @@
         gap: 8px;
       }
       .pjip-list-shell {
+        grid-area: list;
         gap: 14px;
+        min-height: 0;
       }
       .pjip-list-head {
         display: flex;
@@ -1552,11 +1574,11 @@
       }
       .pjip-list {
         display: grid;
-        gap: 10px;
+        gap: 8px;
       }
       .pjip-modal-btn {
-        padding: 8px 10px;
-        font-size: 13px;
+        padding: 7px 10px;
+        font-size: 12px;
       }
       .pjip-modal-btn--primary {
         border-color: #1f69d5;
@@ -1591,26 +1613,31 @@
         opacity: .78;
       }
       .pjip-item {
-        gap: 12px;
+        position: relative;
+        grid-template-columns: minmax(140px, .62fr) minmax(0, 1.38fr) auto;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 14px;
       }
       .pjip-item-top {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
+        display: grid;
+        gap: 6px;
+        min-width: 0;
       }
       .pjip-item-id {
-        font-size: 21px;
+        font-size: 19px;
         font-weight: 700;
         color: #164172;
+        line-height: 1.05;
       }
       .pjip-item-status {
         border-radius: 999px;
         padding: 4px 8px;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         color: #2d506f;
         background: #e8eff8;
+        width: fit-content;
       }
       .pjip-item-status--done {
         color: #18663a;
@@ -1627,35 +1654,40 @@
       .pjip-item-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 6px;
       }
       .pjip-item-pill {
-        padding: 5px 8px;
+        padding: 4px 7px;
         border-radius: 999px;
         background: #eef4fb;
         color: #365879;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
       }
       .pjip-item-grid {
         display: grid;
-        gap: 8px;
+        gap: 10px;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         color: #20364f;
-        font-size: 13px;
+        font-size: 12px;
+        min-width: 0;
       }
       .pjip-item-line {
         display: grid;
-        gap: 3px;
+        gap: 2px;
         min-width: 0;
       }
       .pjip-item-line strong {
         color: #4f6783;
-        font-size: 12px;
+        font-size: 11px;
         letter-spacing: .02em;
       }
       .pjip-item-line span {
         overflow-wrap: anywhere;
+      }
+      .pjip-item-actions {
+        justify-content: flex-end;
+        min-width: 178px;
       }
       .pjip-item-grid strong {
         color: #4f6783;
@@ -1673,17 +1705,30 @@
           padding: 12px;
         }
         #${IDS.modalPanel} {
-          width: min(100vw - 8px, 980px);
+          width: min(100vw - 8px, 1180px);
+          height: 92vh;
           max-height: 92vh;
         }
+        .pjip-modal-body,
         .pjip-overview,
         .pjip-toolbar-grid,
         .pjip-toolbar-row,
+        .pjip-deadline-grid,
         .pjip-deadline-row,
         .pjip-deadline-row--range,
         .pjip-summary-grid,
+        .pjip-item,
         .pjip-item-grid {
           grid-template-columns: 1fr;
+        }
+        .pjip-modal-body {
+          grid-template-areas:
+            "rail"
+            "deadline"
+            "list";
+        }
+        .pjip-overview {
+          position: static;
         }
         .pjip-summary-head,
         .pjip-list-head,
@@ -2413,27 +2458,27 @@
               <div class="pjip-summary-title" data-role="summary-title"></div>
               <div class="pjip-summary-subtitle" data-role="summary-subtitle"></div>
             </div>
-            <div class="pjip-summary-actions">
-              <button type="button" class="pjip-modal-btn pjip-modal-btn--ghost" data-role="backup-toggle"></button>
-            </div>
           </div>
           <div class="pjip-summary-grid">
-            <div class="pjip-stat pjip-stat--late">
+            <button type="button" class="pjip-stat pjip-stat--late" data-role="quick-status" data-status="late">
               <div class="pjip-stat-value" data-role="stat-late">0</div>
               <div class="pjip-stat-label">Vencidas</div>
-            </div>
-            <div class="pjip-stat pjip-stat--soon">
+            </button>
+            <button type="button" class="pjip-stat pjip-stat--soon" data-role="quick-status" data-status="soon">
               <div class="pjip-stat-value" data-role="stat-soon">0</div>
               <div class="pjip-stat-label">Vencendo</div>
-            </div>
-            <div class="pjip-stat pjip-stat--open">
+            </button>
+            <button type="button" class="pjip-stat pjip-stat--open" data-role="quick-status" data-status="open">
               <div class="pjip-stat-value" data-role="stat-open">0</div>
               <div class="pjip-stat-label">Abertas</div>
-            </div>
-            <div class="pjip-stat pjip-stat--done">
+            </button>
+            <button type="button" class="pjip-stat pjip-stat--done" data-role="quick-status" data-status="done">
               <div class="pjip-stat-value" data-role="stat-done">0</div>
               <div class="pjip-stat-label">Concluídas</div>
-            </div>
+            </button>
+          </div>
+          <div class="pjip-summary-actions">
+            <button type="button" class="pjip-modal-btn pjip-modal-btn--ghost" data-role="backup-toggle"></button>
           </div>
         </section>
         <section class="pjip-toolbar">
@@ -2474,12 +2519,35 @@
             <div class="pjip-toolbar-meta" data-role="meta"></div>
           </div>
         </section>
+        <section class="pjip-backup" data-role="backup-panel" hidden>
+          <div class="pjip-backup-head">
+            <div class="pjip-section">
+              <div class="pjip-section-title">Backup remoto</div>
+              <div class="pjip-backup-meta">Gist usado apenas para sincronizar as marcações locais deste script.</div>
+            </div>
+            <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
+          </div>
+          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
+          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
+          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+          <div class="pjip-checks">
+            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+            <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+          </div>
+          <div class="pjip-backup-actions">
+            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar</button>
+          </div>
+          <div class="pjip-backup-meta" data-role="backup-status"></div>
+          <div class="pjip-backup-meta" data-role="backup-last"></div>
+        </section>
       </section>
       <section class="pjip-deadline" data-role="deadline-panel">
         <div class="pjip-deadline-head">
           <div class="pjip-section">
             <div class="pjip-section-title">Prazos</div>
-            <div class="pjip-backup-meta">Destaque automático e filtros aplicados diretamente à tabela atual do Projudi.</div>
+            <div class="pjip-backup-meta">Filtros aplicados diretamente à tabela atual do Projudi.</div>
           </div>
           <div class="pjip-deadline-status" data-role="deadline-status"></div>
         </div>
@@ -2520,29 +2588,6 @@
         </div>
         <section class="pjip-list" data-role="list"></section>
       </section>
-      <section class="pjip-backup" data-role="backup-panel" hidden>
-        <div class="pjip-backup-head">
-          <div class="pjip-section">
-            <div class="pjip-section-title">Backup remoto</div>
-            <div class="pjip-backup-meta">Deixe o backup separado do fluxo principal. Use um único Gist no GitHub com um arquivo exclusivo para este script.</div>
-          </div>
-          <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
-        </div>
-        <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
-        <input type="password" data-role="backup-token" placeholder="Token do GitHub">
-        <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
-        <div class="pjip-checks">
-          <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
-          <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
-        </div>
-        <div class="pjip-backup-actions">
-          <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar backup</button>
-          <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar backup</button>
-          <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar backup</button>
-        </div>
-        <div class="pjip-backup-meta" data-role="backup-status"></div>
-        <div class="pjip-backup-meta" data-role="backup-last"></div>
-      </section>
     `;
 
     overlay.appendChild(panel);
@@ -2573,6 +2618,15 @@
       state.store.ui.statusFilter = input.value || 'active';
       persistStore();
       renderModal();
+    });
+
+    body.querySelectorAll('[data-role="quick-status"]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        const target = /** @type {HTMLElement} */ (event.currentTarget);
+        state.store.ui.statusFilter = target.dataset.status || 'active';
+        persistStore();
+        renderModal();
+      });
     });
 
     body.querySelector('[data-role="sort-by"]')?.addEventListener('change', (event) => {
@@ -2732,7 +2786,7 @@
     setInputValue(root.querySelector('[data-role="deadline-range-start"]'), getDeadlineRangeStart() || filterDate);
     setInputValue(root.querySelector('[data-role="deadline-range-end"]'), getDeadlineRangeEnd() || filterDate);
     setNodeText(root.querySelector('[data-role="deadline-status"]'), describeActiveDeadlineFilter());
-    setNodeText(root.querySelector('[data-role="summary-title"]'), `${summary.visible} item(ns) em foco`);
+    setNodeText(root.querySelector('[data-role="summary-title"]'), `${formatCount(summary.visible, 'item', 'itens')} em foco`);
     setNodeText(
       root.querySelector('[data-role="summary-subtitle"]'),
       summary.late
@@ -2743,10 +2797,15 @@
     setNodeText(root.querySelector('[data-role="stat-soon"]'), String(summary.soon));
     setNodeText(root.querySelector('[data-role="stat-open"]'), String(summary.open));
     setNodeText(root.querySelector('[data-role="stat-done"]'), String(summary.done));
+    root.querySelectorAll('[data-role="quick-status"]').forEach((button) => {
+      if (button instanceof HTMLElement) {
+        button.dataset.active = button.dataset.status === state.store.ui.statusFilter ? 'true' : 'false';
+      }
+    });
     setNodeText(root.querySelector('[data-role="list-meta"]'), describeVisibleItems(summary.visible, summary.total, state.store.ui.statusFilter));
     setNodeText(
       root.querySelector('[data-role="meta"]'),
-      `${visibleItems.length} item(ns) visível(is) • ${summary.total} intimação(ões) marcada(s) • ordenação: ${resolveSortLabel(state.store.ui.sortBy)}.`
+      `${formatCount(visibleItems.length, 'item visível', 'itens visíveis')} • ${formatCount(summary.total, 'intimação marcada', 'intimações marcadas')} • ordenação: ${resolveSortLabel(state.store.ui.sortBy)}.`
     );
     setNodeText(
       root.querySelector('[data-role="backup-toggle"]'),
@@ -2789,26 +2848,25 @@
     const top = document.createElement('div');
     top.className = 'pjip-item-top';
 
-    const headGroup = document.createElement('div');
     const idNode = document.createElement('div');
     idNode.className = 'pjip-item-id';
     idNode.textContent = String(item.id || '');
-    const meta = document.createElement('div');
-    meta.className = 'pjip-item-meta';
-    meta.appendChild(buildItemPill(item.processNumber || 'Sem processo'));
-    meta.appendChild(buildItemPill(item.deadline ? `Prazo ${item.deadline}` : 'Sem prazo'));
-    meta.appendChild(buildItemPill(item.sourceLegend || item.kind || 'Intimação'));
-    headGroup.append(idNode, meta);
 
     const statusNode = document.createElement('div');
     statusNode.className = `pjip-item-status ${resolveItemStatusClass(item)}`.trim();
     statusNode.textContent = resolveItemStatusLabel(item);
-    top.append(headGroup, statusNode);
+
+    const meta = document.createElement('div');
+    meta.className = 'pjip-item-meta';
+    meta.appendChild(buildItemPill(item.processNumber || 'Sem processo'));
+    meta.appendChild(buildItemPill(item.deadline ? `Prazo ${item.deadline}` : 'Sem prazo'));
+    top.append(idNode, statusNode, meta);
 
     const grid = document.createElement('div');
     grid.className = 'pjip-item-grid';
     appendLabeledValue(grid, 'Movimentação', item.movement || '—');
     appendLabeledValue(grid, 'Última atualização', formatObservedAt(item.updatedAt || item.observedAt));
+    appendLabeledValue(grid, 'Origem', item.sourceLegend || item.kind || 'Intimação');
 
     const actions = document.createElement('div');
     actions.className = 'pjip-item-actions';
@@ -2999,7 +3057,18 @@
               : statusFilter === 'active'
                 ? 'abertas em andamento'
                 : 'todos os status';
-    return `${visible} item(ns) exibido(s) de ${total} monitorado(s) • filtro: ${scope}.`;
+    return `${formatCount(visible, 'item exibido', 'itens exibidos')} de ${formatCount(total, 'monitorado', 'monitorados')} • filtro: ${scope}.`;
+  }
+
+  /**
+   * Formata contagens simples com singular e plural.
+   * @param {number} count
+   * @param {string} singular
+   * @param {string} plural
+   * @returns {string}
+   */
+  function formatCount(count, singular, plural) {
+    return `${count} ${count === 1 ? singular : plural}`;
   }
 
   /**
