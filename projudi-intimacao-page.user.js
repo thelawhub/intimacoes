@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.4
+// @version      5.5
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1515,14 +1515,29 @@
       .pjip-deadline-row {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-auto-rows: 56px;
         gap: 8px;
         align-items: stretch;
       }
       .pjip-deadline-row > input,
       .pjip-deadline-row > button {
         width: 100%;
-        min-height: 52px;
+        height: 56px;
+        min-height: 0;
         box-sizing: border-box;
+      }
+      .pjip-deadline-row > input[type="date"] {
+        appearance: none;
+        -webkit-appearance: none;
+        line-height: 1.2;
+        padding: 0 12px;
+      }
+      .pjip-deadline-row > button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 12px;
+        line-height: 1.2;
       }
       .pjip-deadline-row--range {
         grid-template-columns: repeat(3, minmax(0, 1fr));
