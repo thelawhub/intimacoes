@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.2
+// @version      5.3
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1259,6 +1259,7 @@
         display: flex;
       }
       #${IDS.modalPanel} {
+        position: relative;
         width: min(1180px, calc(100vw - 32px));
         height: min(88vh, 920px);
         display: flex;
@@ -1303,12 +1304,15 @@
         background: rgba(255,255,255,.26);
       }
       .pjip-modal-body {
+        flex: 1 1 auto;
+        min-height: 0;
         display: grid;
         grid-template-columns: 292px minmax(0, 1fr);
-        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-rows: auto auto;
         grid-template-areas:
           "rail deadline"
           "rail list";
+        align-items: start;
         gap: 12px;
         padding: 12px;
         overflow: auto;
@@ -1319,8 +1323,6 @@
         display: grid;
         align-content: start;
         gap: 12px;
-        position: sticky;
-        top: 0;
       }
       .pjip-summary {
         display: grid;
@@ -1457,6 +1459,7 @@
         border-radius: 6px;
         padding: 8px 9px;
         font: inherit;
+        min-height: 40px;
       }
       .pjip-toolbar-grid {
         display: grid;
@@ -1511,11 +1514,12 @@
       }
       .pjip-deadline-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 104px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
+        align-items: stretch;
       }
       .pjip-deadline-row--range {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 120px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .pjip-field {
         display: grid;
@@ -1579,6 +1583,7 @@
       .pjip-modal-btn {
         padding: 7px 10px;
         font-size: 12px;
+        min-height: 40px;
       }
       .pjip-modal-btn--primary {
         border-color: #1f69d5;
@@ -1593,6 +1598,28 @@
       }
       .pjip-backup[hidden] {
         display: none;
+      }
+      .pjip-backup-popover {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(15, 35, 60, .28);
+      }
+      .pjip-backup-popover[data-open="true"] {
+        display: flex;
+      }
+      .pjip-backup-dialog {
+        width: min(480px, 100%);
+        max-height: min(74vh, 620px);
+        overflow: auto;
+        border: 1px solid #c9d6e9;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 24px 54px rgba(8, 32, 61, .24);
       }
       .pjip-backup-head {
         display: flex;
@@ -1726,9 +1753,6 @@
             "rail"
             "deadline"
             "list";
-        }
-        .pjip-overview {
-          position: static;
         }
         .pjip-summary-head,
         .pjip-list-head,
@@ -2405,6 +2429,7 @@
   function closeModal() {
     state.modalOpen = false;
     state.store.ui.panelOpen = false;
+    state.store.ui.backupExpanded = false;
     persistStore();
     const overlay = document.getElementById(IDS.modalOverlay);
     if (overlay) overlay.dataset.open = 'false';
@@ -2519,29 +2544,6 @@
             <div class="pjip-toolbar-meta" data-role="meta"></div>
           </div>
         </section>
-        <section class="pjip-backup" data-role="backup-panel" hidden>
-          <div class="pjip-backup-head">
-            <div class="pjip-section">
-              <div class="pjip-section-title">Backup remoto</div>
-              <div class="pjip-backup-meta">Gist usado apenas para sincronizar as marcações locais deste script.</div>
-            </div>
-            <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
-          </div>
-          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
-          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
-          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
-          <div class="pjip-checks">
-            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
-            <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
-          </div>
-          <div class="pjip-backup-actions">
-            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar</button>
-          </div>
-          <div class="pjip-backup-meta" data-role="backup-status"></div>
-          <div class="pjip-backup-meta" data-role="backup-last"></div>
-        </section>
       </section>
       <section class="pjip-deadline" data-role="deadline-panel">
         <div class="pjip-deadline-head">
@@ -2588,6 +2590,32 @@
         </div>
         <section class="pjip-list" data-role="list"></section>
       </section>
+      <div class="pjip-backup-popover" data-role="backup-popover">
+        <section class="pjip-backup pjip-backup-dialog" data-role="backup-panel">
+          <div class="pjip-backup-head">
+            <div class="pjip-section">
+              <div class="pjip-section-title">Backup remoto</div>
+              <div class="pjip-backup-meta">Gist usado apenas para sincronizar as marcações locais deste script.</div>
+            </div>
+            <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
+          </div>
+          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
+          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
+          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+          <div class="pjip-checks">
+            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+            <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
+          </div>
+          <div class="pjip-backup-actions">
+            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-close">Fechar</button>
+          </div>
+          <div class="pjip-backup-meta" data-role="backup-status"></div>
+          <div class="pjip-backup-meta" data-role="backup-last"></div>
+        </section>
+      </div>
     `;
 
     overlay.appendChild(panel);
@@ -2645,7 +2673,20 @@
     });
 
     body.querySelector('[data-role="backup-toggle"]')?.addEventListener('click', () => {
-      state.store.ui.backupExpanded = !state.store.ui.backupExpanded;
+      state.store.ui.backupExpanded = true;
+      persistStore();
+      renderModal();
+    });
+
+    body.querySelector('[data-role="backup-close"]')?.addEventListener('click', () => {
+      state.store.ui.backupExpanded = false;
+      persistStore();
+      renderModal();
+    });
+
+    body.querySelector('[data-role="backup-popover"]')?.addEventListener('click', (event) => {
+      if (event.target !== event.currentTarget) return;
+      state.store.ui.backupExpanded = false;
       persistStore();
       renderModal();
     });
@@ -2809,12 +2850,12 @@
     );
     setNodeText(
       root.querySelector('[data-role="backup-toggle"]'),
-      state.store.ui.backupExpanded ? 'Ocultar backup remoto' : 'Abrir backup remoto'
+      'Abrir backup remoto'
     );
     setNodeText(root.querySelector('[data-role="backup-pill"]'), backupSettings.enabled ? 'Backup ativo' : 'Backup desativado');
-    const backupPanel = root.querySelector('[data-role="backup-panel"]');
-    if (backupPanel instanceof HTMLElement) {
-      backupPanel.hidden = !state.store.ui.backupExpanded;
+    const backupPopover = root.querySelector('[data-role="backup-popover"]');
+    if (backupPopover instanceof HTMLElement) {
+      backupPopover.dataset.open = state.store.ui.backupExpanded ? 'true' : 'false';
     }
 
     const listNode = root.querySelector('[data-role="list"]');
