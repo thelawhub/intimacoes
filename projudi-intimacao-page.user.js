@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.6
+// @version      5.7
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -114,6 +114,7 @@
     jspdf: 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js',
     autoTable: 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js'
   };
+  const FA_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css';
 
   /** @type {{
    * frame: HTMLIFrameElement | null,
@@ -1199,6 +1200,12 @@
         cursor: pointer;
         font: inherit;
       }
+      .pjip-modal-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
       .pjip-action-btn {
         min-height: 32px;
         padding: 0 10px;
@@ -1797,6 +1804,18 @@
     `;
 
     document.head.appendChild(style);
+  }
+
+  /**
+   * Carrega a fonte de icones usada nos botoes do painel.
+   */
+  function ensureFontAwesome() {
+    if (document.querySelector('link[data-pjip-fa="1"]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = FA_CDN;
+    link.dataset.pjipFa = '1';
+    document.head.appendChild(link);
   }
 
   /**
@@ -2447,6 +2466,7 @@
     state.modalOpen = true;
     state.store.ui.panelOpen = true;
     persistStore();
+    ensureFontAwesome();
     ensureModal();
     renderModal();
   }
@@ -2635,9 +2655,9 @@
             <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
           </div>
           <div class="pjip-backup-actions">
-            <button type="button" class="pjip-modal-btn" data-role="backup-send">Enviar</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-restore">Restaurar</button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-clear">Limpar</button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-send"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i><span>Enviar backup</span></button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-restore"><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i><span>Restaurar backup</span></button>
+            <button type="button" class="pjip-modal-btn" data-role="backup-clear"><i class="fa-solid fa-eraser" aria-hidden="true"></i><span>Limpar backup</span></button>
             <button type="button" class="pjip-modal-btn" data-role="backup-close">Fechar</button>
           </div>
           <div class="pjip-backup-meta" data-role="backup-status"></div>
@@ -2876,10 +2896,7 @@
       root.querySelector('[data-role="meta"]'),
       `${formatCount(visibleItems.length, 'item visível', 'itens visíveis')} • ${formatCount(summary.total, 'intimação marcada', 'intimações marcadas')} • ordenação: ${resolveSortLabel(state.store.ui.sortBy)}.`
     );
-    setNodeText(
-      root.querySelector('[data-role="backup-toggle"]'),
-      'Abrir backup remoto'
-    );
+    setIconButton(root.querySelector('[data-role="backup-toggle"]'), 'fa-cloud', 'Backup remoto');
     setNodeText(root.querySelector('[data-role="backup-pill"]'), backupSettings.enabled ? 'Backup ativo' : 'Backup desativado');
     const backupPopover = root.querySelector('[data-role="backup-popover"]');
     if (backupPopover instanceof HTMLElement) {
@@ -4073,6 +4090,22 @@
    */
   function setNodeText(element, value) {
     if (element) element.textContent = value;
+  }
+
+  /**
+   * Atualiza conteudo de botao com icone FontAwesome.
+   * @param {Element | null} element
+   * @param {string} iconClass
+   * @param {string} label
+   */
+  function setIconButton(element, iconClass, label) {
+    if (!(element instanceof HTMLElement)) return;
+    const icon = document.createElement('i');
+    icon.className = `fa-solid ${iconClass}`;
+    icon.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.textContent = label;
+    element.replaceChildren(icon, text);
   }
 
   /**
