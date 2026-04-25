@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.3
+// @version      5.4
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1361,7 +1361,7 @@
       .pjip-summary-actions {
         display: flex;
         flex-wrap: wrap;
-        justify-content: flex-start;
+        justify-content: center;
         gap: 8px;
       }
       .pjip-summary-grid {
@@ -1517,6 +1517,12 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
         align-items: stretch;
+      }
+      .pjip-deadline-row > input,
+      .pjip-deadline-row > button {
+        width: 100%;
+        min-height: 52px;
+        box-sizing: border-box;
       }
       .pjip-deadline-row--range {
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2900,7 +2906,7 @@
     const meta = document.createElement('div');
     meta.className = 'pjip-item-meta';
     meta.appendChild(buildItemPill(item.processNumber || 'Sem processo'));
-    meta.appendChild(buildItemPill(item.deadline ? `Prazo ${item.deadline}` : 'Sem prazo'));
+    meta.appendChild(buildItemPill(formatDeadlinePill(item.deadline)));
     top.append(idNode, statusNode, meta);
 
     const grid = document.createElement('div');
@@ -2973,6 +2979,18 @@
     pill.className = 'pjip-item-pill';
     pill.textContent = text;
     return pill;
+  }
+
+  /**
+   * Formata o selo de prazo sem exibir horario.
+   * @param {string=} deadline
+   * @returns {string}
+   */
+  function formatDeadlinePill(deadline) {
+    const value = normalizeSpaces(deadline || '');
+    if (!value) return 'Sem prazo';
+    const match = value.match(/\b(\d{2}\/\d{2}\/\d{4})\b/);
+    return match ? `Prazo ${match[1]}` : `Prazo ${value}`;
   }
 
   /**
