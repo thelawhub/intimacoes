@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.7
+// @version      5.8
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1635,26 +1635,26 @@
         display: none;
       }
       .pjip-backup-popover {
-        position: absolute;
+        position: fixed;
         inset: 0;
-        z-index: 2;
+        z-index: 2147483647;
         display: none;
         align-items: center;
         justify-content: center;
         padding: 18px;
-        background: rgba(15, 35, 60, .28);
+        background: rgba(15, 23, 42, .34);
       }
       .pjip-backup-popover[data-open="true"] {
         display: flex;
       }
       .pjip-backup-dialog {
-        width: min(480px, 100%);
-        max-height: min(74vh, 620px);
+        width: min(720px, calc(100vw - 36px));
+        max-height: min(84vh, 760px);
         overflow: auto;
-        border: 1px solid #c9d6e9;
-        border-radius: 10px;
+        border: 1px solid #dbe3ef;
+        border-radius: 12px;
         background: #fff;
-        box-shadow: 0 24px 54px rgba(8, 32, 61, .24);
+        box-shadow: 0 24px 70px rgba(2, 6, 23, .30);
       }
       .pjip-backup-head {
         display: flex;
