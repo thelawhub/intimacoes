@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Intimações
 // @namespace    projudi-intimacao-page.user.js
-// @version      5.8
+// @version      5.9
 // @icon         https://img.icons8.com/ios-filled/100/scales--v1.png
 // @description  Reúne intimações, exporta CSV/PDF, permite triagem local e destaca/filtra prazos do Projudi.
 // @author       louencosv (GPT)
@@ -1570,8 +1570,9 @@
         line-height: 1.2;
       }
       .pjip-checks {
-        display: grid;
-        gap: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
         font-size: 12px;
         color: #375272;
       }
@@ -1579,9 +1580,9 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 8px 9px;
+        padding: 8px 10px;
         border: 1px solid #dbe3ef;
-        border-radius: 6px;
+        border-radius: 999px;
         background: #f8fbff;
         cursor: pointer;
       }
@@ -1629,6 +1630,7 @@
         background: #f8fbff;
       }
       .pjip-backup {
+        display: grid;
         gap: 14px;
       }
       .pjip-backup[hidden] {
@@ -1650,7 +1652,9 @@
       .pjip-backup-dialog {
         width: min(720px, calc(100vw - 36px));
         max-height: min(84vh, 760px);
+        padding: 16px;
         overflow: auto;
+        box-sizing: border-box;
         border: 1px solid #dbe3ef;
         border-radius: 12px;
         background: #fff;
@@ -1662,14 +1666,58 @@
         justify-content: space-between;
         gap: 12px;
       }
-      .pjip-backup-status-pill {
-        padding: 6px 10px;
+      .pjip-backup-close {
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+        padding: 0;
+        border: 1px solid #cbd5e1;
         border-radius: 999px;
-        background: #eef4fb;
-        color: #48627e;
+        background: #f8fbff;
+        color: #173a61;
+        cursor: pointer;
+        font-size: 17px;
+        line-height: 1;
+      }
+      .pjip-backup-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .pjip-backup-span {
+        grid-column: 1 / -1;
+      }
+      .pjip-backup-field {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+      .pjip-backup-field label {
+        color: #2d4668;
         font-size: 12px;
         font-weight: 700;
-        white-space: nowrap;
+      }
+      .pjip-backup-actions {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .pjip-backup-primary {
+        border-color: #1f69d5;
+        background: #1f69d5;
+        color: #fff;
+      }
+      .pjip-backup-success {
+        border-color: #16833a;
+        background: #18883f;
+        color: #fff;
+      }
+      .pjip-backup-danger {
+        border-color: #fecaca;
+        background: #fff7f7;
+        color: #b42318;
       }
       .pjip-item--done {
         opacity: .78;
@@ -1778,6 +1826,8 @@
         .pjip-deadline-grid,
         .pjip-deadline-row,
         .pjip-deadline-row--range,
+        .pjip-backup-grid,
+        .pjip-backup-actions,
         .pjip-summary-grid,
         .pjip-item,
         .pjip-item-grid {
@@ -2641,23 +2691,34 @@
       <div class="pjip-backup-popover" data-role="backup-popover">
         <section class="pjip-backup pjip-backup-dialog" data-role="backup-panel">
           <div class="pjip-backup-head">
-            <div class="pjip-section">
-              <div class="pjip-section-title">Backup remoto</div>
-              <div class="pjip-backup-meta">Gist usado apenas para sincronizar as marcações locais deste script.</div>
+            <div>
+              <div class="pjip-section-title">BACKUP REMOTO</div>
+              <div class="pjip-backup-meta">Use um único Gist no GitHub e um arquivo separado para este script.</div>
             </div>
-            <div class="pjip-backup-status-pill" data-role="backup-pill"></div>
+            <button type="button" class="pjip-backup-close" data-role="backup-close" title="Fechar">×</button>
           </div>
-          <input type="text" data-role="backup-gist-id" placeholder="Gist ID">
-          <input type="password" data-role="backup-token" placeholder="Token do GitHub">
-          <input type="text" data-role="backup-file-name" placeholder="Nome do arquivo">
+          <div class="pjip-backup-grid">
+            <div class="pjip-backup-field">
+              <label>Gist ID</label>
+              <input type="text" data-role="backup-gist-id" placeholder="Cole o Gist ID">
+            </div>
+            <div class="pjip-backup-field">
+              <label>Arquivo</label>
+              <input type="text" data-role="backup-file-name" placeholder="projudi-intimacao-page.json">
+            </div>
+            <div class="pjip-backup-field pjip-backup-span">
+              <label>Token do GitHub</label>
+              <input type="password" data-role="backup-token" placeholder="ghp_...">
+            </div>
+          </div>
           <div class="pjip-checks">
-            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist</label>
+            <label><input type="checkbox" data-role="backup-enabled"> Ativar backup por Gist no GitHub</label>
             <label><input type="checkbox" data-role="backup-auto"> Backup automático</label>
           </div>
           <div class="pjip-backup-actions">
-            <button type="button" class="pjip-modal-btn" data-role="backup-send"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i><span>Enviar backup</span></button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-restore"><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i><span>Restaurar backup</span></button>
-            <button type="button" class="pjip-modal-btn" data-role="backup-clear"><i class="fa-solid fa-eraser" aria-hidden="true"></i><span>Limpar backup</span></button>
+            <button type="button" class="pjip-modal-btn pjip-backup-primary" data-role="backup-send"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i><span>Enviar backup</span></button>
+            <button type="button" class="pjip-modal-btn pjip-backup-success" data-role="backup-restore"><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i><span>Restaurar backup</span></button>
+            <button type="button" class="pjip-modal-btn pjip-backup-danger" data-role="backup-clear"><i class="fa-solid fa-eraser" aria-hidden="true"></i><span>Limpar backup</span></button>
             <button type="button" class="pjip-modal-btn" data-role="backup-close">Fechar</button>
           </div>
           <div class="pjip-backup-meta" data-role="backup-status"></div>
@@ -2726,11 +2787,11 @@
       renderModal();
     });
 
-    body.querySelector('[data-role="backup-close"]')?.addEventListener('click', () => {
+    body.querySelectorAll('[data-role="backup-close"]').forEach(button => button.addEventListener('click', () => {
       state.store.ui.backupExpanded = false;
       persistStore();
       renderModal();
-    });
+    }));
 
     body.querySelector('[data-role="backup-popover"]')?.addEventListener('click', (event) => {
       if (event.target !== event.currentTarget) return;
